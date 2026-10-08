@@ -33,7 +33,7 @@ SRC = "https://raw.githubusercontent.com/kadoa-org/congress-trading-monitor/main
 
 START = "2020-01-01"          # Trades ab diesem Meldedatum
 PRICE_START = "2019-06-01"    # Kurse ab hier (Puffer für Trade-Datum vor Meldung)
-HORIZONS = {"30": 21, "90": 63, "180": 126, "365": 252}   # Kalendertage -> Handelstage
+HORIZONS = {"30": 21, "60": 42, "90": 63}   # Kalendertage -> Handelstage
 BENCH = "SPY"
 
 OWNER = {"SP": "Ehepartner", "Spouse": "Ehepartner", "JT": "Gemeinsam", "Joint": "Gemeinsam",
@@ -424,8 +424,8 @@ def export(members, rows, dates, px):
         m2 = re.match(r"https://efdsearch\.senate\.gov/search/view/(.+?)/?$", d)
         r["doc"] = "h:" + m.group(1) if m else ("s:" + m2.group(1) if m2 else d)
     fields = ["m", "t", "side", "partial", "kind", "owner", "tx", "filed", "lo", "hi", "asset", "doc",
-              "comment", "pi", "ti", "px", "r30", "r90", "r180", "r365", "x30", "x90", "x180", "x365",
-              "tx30", "tx90", "tx180", "tx365", "rn", "xn", "lag", "lagx"]
+              "comment", "pi", "ti", "px", "r30", "r60", "r90", "x30", "x60", "x90",
+              "tx30", "tx60", "tx90", "rn", "xn", "lag", "lagx"]
     rows.sort(key=lambda r: (r["filed"], r["tx"]), reverse=True)
     json.dump({"fields": fields, "rows": [[r.get(f) for f in fields] for r in rows]},
               open(os.path.join(OUT, "trades.json"), "w"), separators=(",", ":"))
@@ -482,12 +482,27 @@ def main(argv=None, downloader=download_batch):
     members, trades = load_trades()
     prices = load_prices({t["t"] for t in trades} | {"QQQ"}, full=a.full, downloader=downloader)
     dates, px, rows = compute(members, trades, prices)
+    import committees
+    os.makedirs(OUT, exist_ok=True)
+    tth, tind = {}, {}
+    try:
+        for i, v in committees.member_committees(members).items():
+            members[i].update(v)
+        tth, tind = committees.ticker_themes({r["t"] for r in rows})
+        json.dump({"themes": committees.THEMES,
+                   "tickers": {t: {"th": tth.get(t, []), "ind": tind.get(t, "")} for t in tind if tind.get(t) or tth.get(t)}},
+                  open(os.path.join(OUT, "sectors.json"), "w"), separators=(",", ":"), ensure_ascii=False)
+        log(f"Ausschüsse: {sum(1 for m in members if m.get('th'))} Politiker mit Branchenbezug, {len(tth)} Aktien zugeordnet")
+    except Exception as e:  # noqa
+        log("WARN Ausschüsse/Branchen nicht geladen:", e)
     export(members, rows, dates, px)
     import signals
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     site = f"https://{repo.split('/')[0]}.github.io/{repo.split('/')[1]}/" if "/" in repo else ""
-    sigs = signals.write_signals(OUT, CACHE, members, rows, dates, px, BENCH, site)
-    log(f"Signale: {sum(s['active'] for s in sigs)} aktiv, {len(sigs)} gesamt")
+    D = signals.write_signals(OUT, CACHE, members, rows, dates, px, BENCH, site, tth, tind)
+    c3 = D["clusters"]["3"]["signals"]
+    log(f"Cluster (>=3 Käufer): {len(c3)} gesamt, {sum(1 for x in c3 if x['i'] is None or x['i'] + 63 > len(dates) - 1)} offen; "
+        f"Ausschuss-Käufe seit 2025: {len(D['committee']['buys'])}")
 
 
 if __name__ == "__main__":
