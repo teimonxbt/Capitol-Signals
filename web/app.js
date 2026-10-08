@@ -265,12 +265,14 @@ function openTable(list, h, committee, key) {
 function viewTop(app) {
   const h = S.h, T = D.top[h];
   const top10 = new Set(T.rank.slice(0, D.topN).map(x => x.m));
-  const open = D.topBuys.filter(s => top10.has(s.m) && isOpen(s, h));
+  const openAll = D.topBuys.filter(s => top10.has(s.m) && isOpen(s, h));
+  const per = {}; const open = openAll.filter(s => (per[s.m] = (per[s.m] || 0) + 1) <= 5);
+  const hidden = Object.entries(per).filter(([, n]) => n > 5).map(([m, n]) => `${esc(short(mem(m).name))} +${n - 5}`);
   const st = stats(T.follow, h);
   const pts = curveFrom(T.curve);
   app.innerHTML = `
     <div class="view-head"><div><div class="eyebrow">Strategie 3</div><h1>Top-Politiker</h1><p>Wer hat mit seinen Käufen über ${h} Tage am meisten besser abgeschnitten als der S&amp;P 500? Neue Käufe der Top ${D.topN} werden zum Schlusskurs nach der Meldung gekauft.</p></div></div>
-    <h3 class="sec">Neue Käufe der Top ${D.topN} <small>${open.length} offen bei ${h} Tagen Haltedauer</small></h3>
+    <h3 class="sec">Neue Käufe der Top ${D.topN} <small>${openAll.length} offen bei ${h} Tagen Haltedauer${hidden.length ? ` · höchstens 5 je Politiker gezeigt (${hidden.join(", ")} weitere)` : ""}</small></h3>
     ${open.length ? openTable(open, h, false, "otp") : `<div class="panel empty">Die Top ${D.topN} haben zuletzt nichts gekauft.</div>`}
     <h3 class="sec">Rangliste <small>Käufe mit ${h}-Tage-Ergebnis, mindestens ${D.topMin}</small></h3>
     <div class="panel"><div class="tbl-wrap"><table><thead><tr><th>#</th><th>Politiker</th><th class="n">Käufe</th><th class="n">Ø Rendite</th><th class="n">Ø vs S&amp;P</th><th class="n">schlägt S&amp;P</th><th class="n" title="Ø vs S&amp;P, bei wenigen Käufen Richtung 0 gezogen">Score</th><th>Ausschüsse</th></tr></thead><tbody>
