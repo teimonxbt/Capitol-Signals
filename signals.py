@@ -24,6 +24,7 @@ WIN = 30
 MIN_NS = (2, 3, 4)
 COOLDOWN = 63
 COMMITTEE_START = "2025-01-03"      # Beginn des 119. Kongresses
+DIP = -40           # "Dip-Cluster": Aktie mindestens 40 % unter ihrem 52-Wochen-Hoch
 TOP_N = 10
 TOP_MIN = 5
 SHRINK = 10
@@ -60,6 +61,15 @@ def _rets(col, spy, qqq, i, last):
         o["rn"] = _p(_r(col, i, last))
         o["sn"] = _p(_r(spy, i, last))
     return o
+
+
+def _from_high(col, i):
+    """Abstand (in %) zum höchsten Schlusskurs der letzten 252 Handelstage."""
+    w = col[max(0, i - 252):i + 1]
+    w = w[w > 0]
+    if len(w) < 60 or not (col[i] > 0):
+        return None
+    return round(float(col[i] / w.max() - 1) * 100, 1)
 
 
 def _curve(positions, cols, n, i0):
@@ -135,12 +145,13 @@ def build(members, rows, dates, px, bench="SPY", tth=None, sectors=None):
                 rec = {"t": tk, "d": r["filed"], "i": r["pi"], "n": len(b), "o": len(s), "m": sorted(b),
                        "cm": sorted({u["m"] for u in bw if cm(u)}),
                        "vol": round(sum(((u["lo"] or 0) + (u["hi"] or u["lo"] or 0)) / 2 for u in bw))}
+                rec["fh"] = _from_high(col, r["pi"] if r["pi"] is not None else last)
                 rec.update(_rets(col, spy, qqq, r["pi"], last))
                 out.append(rec)
         out.sort(key=lambda s: (s["d"], s["n"]), reverse=True)
         curves = {}
         for k, h in HOLDS.items():
-            for flag, sel in (("", out), ("c", [s for s in out if s["cm"]])):
+            for flag, sel in (("", out), ("c", [s for s in out if s["cm"]]), ("d", [s for s in out if (s.get("fh") or 0) <= DIP])):
                 curves[k + flag] = _curve([(s["t"], s["i"], min(s["i"] + h, last)) for s in sel if s["i"] is not None], cols, n, i0)
         clusters[str(mn)] = {"signals": out, "curves": curves}
 
@@ -255,7 +266,7 @@ def build(members, rows, dates, px, bench="SPY", tth=None, sectors=None):
         i_last_dates = i_last_dates + [dates[-1]]
     return {
         "asof": dates[-1], "dates": dates, "curveStart": i0, "step": STEP, "curveDates": i_last_dates,
-        "holds": HOLDS, "win": WIN, "cooldown": COOLDOWN, "committeeStart": COMMITTEE_START, "committeeIdx": ci0,
+        "holds": HOLDS, "win": WIN, "dip": DIP, "cooldown": COOLDOWN, "committeeStart": COMMITTEE_START, "committeeIdx": ci0,
         "topN": TOP_N, "topMin": TOP_MIN,
         "bench": {"SPY": bcurve(spy), "QQQ": bcurve(qqq) if qqq is not None else None},
         "clusters": clusters, "committee": {"buys": comm, "curves": comm_curves},
@@ -304,6 +315,11 @@ def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", sit
     new_c = [s for s in cl if ck(s) not in seen and s["d"] >= recent]
     seen |= {ck(s) for s in cl}
 
+    dl = [x for x in D["clusters"]["2"]["signals"] if (x.get("fh") or 0) <= DIP]
+    dk = lambda s: f'D|{s["t"]}|{s["d"]}'
+    new_d = [x for x in dl if dk(x) not in seen and x["d"] >= recent]
+    seen |= {dk(x) for x in dl}
+
     cb = D["committee"]["buys"]
     kk = lambda r: f'C|{r["m"]}|{r["t"]}|{r["d"]}'
     new_k = [r for r in cb if kk(r) not in seen and r["d"] >= recent]
@@ -311,14 +327,22 @@ def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", sit
 
     top_now = {x["m"] for x in D["top"]["60"]["rank"][:TOP_N]}
     tk = lambda r: f'T|{r["m"]}|{r["t"]}|{r["d"]}'
-    new_t = [r for r in D["topBuys"] if r["m"] in top_now and tk(r) not in seen and r["d"] >= recent]
+    per = {}
+    new_t = [r for r in D["topBuys"] if r["m"] in top_now and tk(r) not in seen and r["d"] >= recent
+             and (per.__setitem__(r["m"], per.get(r["m"], 0) + 1) or per[r["m"]]) <= 3]   # max. 3 je Politiker
     seen |= {tk(r) for r in D["topBuys"]}
     json.dump(sorted(seen), open(seen_file, "w"))
 
-    if new_c or new_k or new_t:
-        parts = [f'{s["t"]} Cluster' for s in new_c[:4]] + [f'{r["t"]} Ausschuss' for r in new_k[:3]] + [f'{r["t"]} Top' for r in new_t[:3]]
-        title = "Capitol Signals: " + ", ".join(parts) + (" …" if len(new_c) + len(new_k) + len(new_t) > len(parts) else "")
+    if new_c or new_k or new_t or new_d:
+        parts = [f'{s["t"]} Dip-Cluster' for s in new_d[:3]] + [f'{s["t"]} Cluster' for s in new_c[:4]] + [f'{r["t"]} Ausschuss' for r in new_k[:3]] + [f'{r["t"]} Top' for r in new_t[:3]]
+        title = "Capitol Signals: " + ", ".join(parts) + (" …" if len(new_c) + len(new_k) + len(new_t) + len(new_d) > len(parts) else "")
         L = [title, "", f"Kursstand {dates[-1]}. Einstieg zum nächsten Schlusskurs, Haltedauer 30 bis 90 Tage.", ""]
+        if new_d:
+            L += ["**Neue Dip-Cluster** (mind. 2 Politiker kaufen eine Aktie, die 40 % oder mehr unter ihrem 52-Wochen-Hoch steht; historisch bester Teilbereich, aber wenige Fälle):", "",
+                  "| Aktie | Käufer | unter Hoch | gemeldet |", "|---|---|---|---|"]
+            for s in new_d:
+                L.append(f'| {s["t"]} | {s["n"]}: {", ".join(nm(i) for i in s["m"][:6])} | {s["fh"]:.0f} % | {s["d"]} |')
+            L.append("")
         if new_c:
             L += ["**Neue Cluster** (mindestens 3 Politiker kaufen dieselbe Aktie):", "", "| Aktie | Käufer | Ausschuss-Bonus | gemeldet |", "|---|---|---|---|"]
             for s in new_c:
