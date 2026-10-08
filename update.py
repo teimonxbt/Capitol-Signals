@@ -202,6 +202,9 @@ def nasdaq_prices(symbols, start):
                 break
         if (n + 1) % 25 == 0:
             log(f"  Nasdaq: {n + 1}/{len(symbols)} · {len(out)} gefunden")
+            if not out:
+                log("  Nasdaq liefert nichts – breche ab.")
+                break
         time.sleep(0.4)
     log(f"  Nasdaq: {len(out)} von {len(symbols)} Tickern gefunden")
     return pd.DataFrame(out) if out else pd.DataFrame()
@@ -341,7 +344,7 @@ def compute(members, trades, prices):
     if BENCH not in prices.columns:
         raise SystemExit("SPY fehlt in den Kursdaten.")
     cal = prices[BENCH].dropna().index
-    px = prices.reindex(cal).ffill(limit=5)
+    px = prices.reindex(cal).ffill(limit=5).astype("float64")
     dates = [d.strftime("%Y-%m-%d") for d in cal]
     n = len(dates)
     spy = px[BENCH].values
