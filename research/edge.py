@@ -30,7 +30,7 @@ OUT = os.path.join(ROOT, "research_out")
 os.makedirs(OUT, exist_ok=True)
 H = {"30": 21, "60": 42, "90": 63}
 SPLIT = "2024-01-01"
-UA = {"User-Agent": "CapitolSignals research teimonxbt@users.noreply.github.com", "Accept-Encoding": "gzip, deflate"}
+UA = {"User-Agent": "CapitolSignals/1.0 (research; teimonxbt@users.noreply.github.com)", "Accept-Encoding": "gzip, deflate", "Host": "www.sec.gov"}
 NOISE = re.compile(r"reinvest|dividend", re.I)
 LOG = []
 
@@ -67,7 +67,10 @@ def sec_insider(px_cols, start_year=2020):
         try:
             r = requests.get(url, headers=UA, timeout=120)
             if r.status_code != 200:
-                log("SEC", tag, "HTTP", r.status_code)
+                log("SEC", tag, "HTTP", r.status_code, r.text[:160].replace("\n", " "))
+                if r.status_code == 403:
+                    log("SEC blockiert – nutze OpenInsider")
+                    return pd.DataFrame()
                 continue
             z = zipfile.ZipFile(io.BytesIO(r.content))
             names = {n.upper().split("/")[-1]: n for n in z.namelist()}
@@ -117,6 +120,77 @@ def sec_insider(px_cols, start_year=2020):
     return ib
 
 
+def openinsider(start="2020-01-01"):
+    """Ersatzquelle: OpenInsider-Screener (Form-4-Käufe, Code P), monatsweise."""
+    cache_file = os.path.join(CACHE, "insider_oi.pkl")
+    have = pd.read_pickle(cache_file) if os.path.exists(cache_file) else pd.DataFrame()
+    done = set(have["mon"].unique()) if not have.empty else set()
+    months = pd.date_range(start, date.today(), freq="MS")
+    parts = [have] if not have.empty else []
+    hdr = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"}
+    fails = 0
+    for k, m0 in enumerate(months):
+        mon = m0.strftime("%Y-%m")
+        recent = k >= len(months) - 2
+        if mon in done and not recent:
+            continue
+        m1 = (m0 + pd.offsets.MonthEnd(0))
+        rows = []
+        for page in (1, 2, 3):
+            url = ("http://openinsider.com/screener?s=&o=&pl=&ph=&ll=&lh=&fd=-1&fdr="
+                   f"{m0:%m}%2F{m0:%d}%2F{m0:%Y}+-+{m1:%m}%2F{m1:%d}%2F{m1:%Y}"
+                   "&td=0&tdr=&fdlyl=&fdlyh=&daysago=&xp=1&vl=&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999&grp=0"
+                   f"&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=5000&page={page}")
+            try:
+                r = requests.get(url, headers=hdr, timeout=90)
+                tabs = pd.read_html(io.StringIO(r.text), attrs={"class": "tinytable"})
+                t = tabs[0] if tabs else pd.DataFrame()
+            except Exception as e:  # noqa
+                log("OpenInsider", mon, page, type(e).__name__, str(e)[:100])
+                t = pd.DataFrame()
+                fails += 1
+            if t.empty:
+                break
+            rows.append(t)
+            if len(t) < 5000:
+                break
+            time.sleep(1.0)
+        if not rows:
+            if fails > 8:
+                log("OpenInsider: zu viele Fehler, Abbruch")
+                break
+            continue
+        t = pd.concat(rows, ignore_index=True)
+        t.columns = [str(c).replace("\xa0", " ").strip() for c in t.columns]
+        num = lambda x: pd.to_numeric(x.astype(str).str.replace(r"[+$,%]", "", regex=True), errors="coerce")
+        title = t["Title"].fillna("").astype(str)
+        d = pd.DataFrame({
+            "mon": mon, "q": mon,
+            "t": t["Ticker"].astype(str).str.upper().str.strip().str.replace(".", "-", regex=False),
+            "filed": pd.to_datetime(t["Filing Date"], errors="coerce").dt.strftime("%Y-%m-%d"),
+            "tx": pd.to_datetime(t["Trade Date"], errors="coerce").dt.strftime("%Y-%m-%d"),
+            "cik": t["Insider Name"].astype(str),
+            "val": num(t["Value"]).abs(), "sh": num(t["Qty"]).abs(), "after": num(t["Owned"]),
+            "down": t["ΔOwn"].astype(str) if "ΔOwn" in t.columns else "",
+            "officer": title.str.contains(r"CEO|CFO|COO|CTO|Pres|VP|GC|Officer|Chief|Treas|Sec", case=False, regex=True),
+            "director": title.str.contains(r"Dir", case=False),
+            "ten": title.str.contains("10%"),
+            "ceo": title.str.contains(r"CEO|Pres", case=False, regex=True),
+            "cfo": title.str.contains("CFO", case=False),
+            "plan": False,   # OpenInsider zeigt keinen 10b5-1-Status
+        }).dropna(subset=["filed", "t"])
+        parts = [p for p in parts if p.empty or mon not in set(p["mon"])] + [d]
+        if k % 6 == 0 or recent:
+            log("OpenInsider", mon, len(d), "Käufe")
+        time.sleep(1.0)
+    if not parts:
+        return pd.DataFrame()
+    ib = pd.concat(parts, ignore_index=True)
+    ib.to_pickle(cache_file)
+    log("OpenInsider gesamt:", len(ib))
+    return ib
+
+
 # =============================================================================== Features & Outcomes
 class Px:
     def __init__(self, px, dates):
@@ -130,6 +204,20 @@ class Px:
         self.spy_ma200 = s.rolling(200).mean().values
         self.spy_ma50 = s.rolling(50).mean().values
         self._ma = {}
+        self._dr = {}
+        self.spy_dr = np.r_[np.nan, self.spy[1:] / self.spy[:-1] - 1]
+
+    def beta(self, t, i):
+        if t not in self._dr:
+            c = self.cols[t]
+            self._dr[t] = np.r_[np.nan, c[1:] / c[:-1] - 1]
+        a, b = self._dr[t][max(1, i - 252):i], self.spy_dr[max(1, i - 252):i]
+        ok = np.isfinite(a) & np.isfinite(b)
+        if ok.sum() < 120:
+            return 1.0
+        a, b = a[ok], b[ok]
+        v = np.var(b)
+        return float(np.clip(np.cov(a, b)[0, 1] / v, 0.2, 3.0)) if v > 0 else 1.0
 
     def idx_after(self, d):
         import bisect
@@ -170,6 +258,7 @@ class Px:
         f["vol3m"] = float(np.std(np.diff(np.log(d))) * np.sqrt(252)) if len(d) > 40 else None
         f["spy_up"] = bool(self.spy[i] > self.spy_ma200[i]) if self.spy_ma200[i] > 0 else None
         f["price"] = float(p)
+        f["beta"] = self.beta(t, i)
         return f
 
     def outcome(self, t, i, h, stop=None, tp=None):
@@ -202,7 +291,11 @@ def summarize(evs, key="ex"):
         r = np.array([e["r"] for e in a])
         return {"n": len(a), "beat": round(float((x > 0).mean() * 100), 1), "win": round(float((r > 0).mean() * 100), 1),
                 "ex": round(float(x.mean() * 100), 2), "med": round(float(np.median(x) * 100), 2),
-                "t": round(float(x.mean() / (x.std(ddof=1) / np.sqrt(len(x)))), 2) if x.std() > 0 else None}
+                "t": round(float(x.mean() / (x.std(ddof=1) / np.sqrt(len(x)))), 2) if x.std() > 0 else None,
+                **({"bbeat": round(float((np.array([e["exb"] for e in a]) > 0).mean() * 100), 1),
+                    "bex": round(float(np.mean([e["exb"] for e in a]) * 100), 2),
+                    "bt": round(float(np.mean([e["exb"] for e in a]) / (np.std([e["exb"] for e in a], ddof=1) / np.sqrt(len(a)))), 2)}
+                   if "exb" in a[0] else {})}
     return {"all": st(evs), "is": st([e for e in evs if e["d"] < SPLIT]), "oos": st([e for e in evs if e["d"] >= SPLIT])}
 
 
@@ -220,7 +313,8 @@ def attach(P, evs, h, stop=None, tp=None):
         if o is None:
             continue
         r, s, x = o
-        out.append({**e, "r": r, "s": s, "ex": r - s, "x": x})
+        b = e.get("beta") or 1.0
+        out.append({**e, "r": r, "s": s, "ex": r - s, "exb": r - b * s, "x": x})
     return out
 
 
@@ -323,6 +417,47 @@ def insider_events(ib, P):
     return ev
 
 
+# =============================================================================== Portfolio
+def portfolio(P, evs, h, dates):
+    """Alle offenen Positionen gleich gewichtet, täglich. 'long' = nur Aktien, 'hedged' = Aktie minus Beta*SPY."""
+    n = P.n
+    sl, sh, cnt = np.zeros(n), np.zeros(n), np.zeros(n)
+    for e in evs:
+        i = e["i"]
+        if i is None or i >= n - 1:
+            continue
+        c = P.cols[e["t"]]
+        x = min(i + h, n - 1)
+        seg = c[i:x + 1]
+        d = seg[1:] / seg[:-1] - 1
+        d = np.where(np.isfinite(d), d, 0.0)
+        sp = P.spy_dr[i + 1:x + 1]
+        sp = np.where(np.isfinite(sp), sp, 0.0)
+        sl[i + 1:x + 1] += d
+        sh[i + 1:x + 1] += d - (e.get("beta") or 1.0) * sp
+        cnt[i + 1:x + 1] += 1
+    i0 = next(i for i, d in enumerate(dates) if d >= "2020-01-01")
+    out = {}
+    for k, s in (("long", sl), ("hedged", sh)):
+        r = np.divide(s, cnt, out=np.zeros(n), where=cnt > 0)[i0:]
+        eq = np.cumprod(1 + r)
+        yrs = len(r) / 252
+        peak = np.maximum.accumulate(eq)
+        by = {}
+        for j, d in enumerate(dates[i0:]):
+            by.setdefault(d[:4], []).append(r[j])
+        out[k] = {"cagr": round(float((eq[-1] ** (1 / yrs) - 1) * 100), 1), "mdd": round(float((eq / peak - 1).min() * 100), 1),
+                  "sharpe": round(float(r.mean() / r.std() * np.sqrt(252)), 2) if r.std() > 0 else None,
+                  "years": {y: round(float((np.prod(1 + np.array(v)) - 1) * 100), 1) for y, v in by.items()}}
+    spy = P.spy_dr[i0:]
+    spy = np.where(np.isfinite(spy), spy, 0)
+    eqs = np.cumprod(1 + spy)
+    out["spy_cagr"] = round(float((eqs[-1] ** (252 / len(spy)) - 1) * 100), 1)
+    out["avg_pos"] = round(float(cnt[i0:].mean()), 1)
+    out["invested"] = round(float((cnt[i0:] > 0).mean() * 100))
+    return out
+
+
 # =============================================================================== Auswertung
 def run():
     t0 = time.time()
@@ -376,6 +511,7 @@ def run():
                 T[f"{prefix}|{h}|{name}"] = summarize([e for e in base if fn(e)])
 
     # ---- Punkt 1+2: einzelne Käufe & Cluster mit technischen Filtern
+    CLS = {}
     feature_grid("Kongress-Kauf", CE)
     for mn in (2, 3):
         CL = clusters(CE, mn)
@@ -383,6 +519,16 @@ def run():
             e.update(P.feats(e["t"], e["i"]) or {})
         feature_grid(f"Cluster {mn}+", CL)
         log(f"Cluster {mn}+:", len(CL))
+        CLS[mn] = CL
+
+    # Dosis-Wirkung: Abstand zum 52-Wochen-Hoch (hält das Muster stufenweise?)
+    BINS = [("0 bis -10%", -0.10, 9), ("-10 bis -20%", -0.20, -0.10), ("-20 bis -30%", -0.30, -0.20),
+            ("-30 bis -40%", -0.40, -0.30), ("-40 bis -50%", -0.50, -0.40), ("mehr als -50%", -9, -0.50)]
+    for lab, evs in (("Kongress-Kauf", CE), ("Cluster 2+", CLS[2]), ("Cluster 3+", CLS[3])):
+        for h in ("30", "60", "90"):
+            base = attach(P, evs, H[h])
+            for bl, lo, hi in BINS:
+                T[f"Abstand zum Hoch – {lab}|{h}|{bl}"] = summarize([e for e in base if e.get("from_high") is not None and lo < e["from_high"] <= hi])
 
     # ---- Punkt 4: ungewöhnliche Käufe
     for h in ("30", "60", "90"):
@@ -417,6 +563,8 @@ def run():
     IE = []
     try:
         ib = sec_insider(set(P.cols))
+        if ib.empty:
+            ib = openinsider()
         if not ib.empty:
             IE = insider_events(ib, P)
             for e in IE:
@@ -465,24 +613,37 @@ def run():
             base = attach(P, IE, H[h])
             for name, fn in IF:
                 T[f"Insider|{h}|{name}"] = summarize([e for e in base if fn(e)])
+            for bl, lo, hi in BINS:
+                T[f"Abstand zum Hoch – Insider >=100K|{h}|{bl}"] = summarize([e for e in base if e["val"] >= 1e5 and e.get("from_high") is not None and lo < e["from_high"] <= hi])
             cb = attach(P, CE, H[h])
             T[f"Kombi|{h}|Politiker-Kauf + Insider-Kauf (>=25K) 60 T davor"] = summarize([e for e in cb if e.get("insider60")])
             T[f"Kombi|{h}|Politiker-Kauf ohne Insider"] = summarize([e for e in cb if not e.get("insider60")])
 
-    # ---- Punkt 5: Exits auf die vielversprechendsten Mengen
-    cands = {"Kongress-Kauf (alle)": CE, "Cluster 3+": [dict(e, **(P.feats(e["t"], e["i"]) or {})) for e in clusters(CE, 3)]}
+    # ---- Punkt 5: Exits + Portfolio auf die Kandidaten
+    far = lambda e: e.get("from_high") is not None and e["from_high"] < -0.30
+    cands = {
+        "Kongress-Kauf (alle)": CE,
+        "Cluster 3+": CLS[3],
+        "Kongress-Kauf >30% unter Hoch": [e for e in CE if far(e)],
+        "Cluster 2+ >30% unter Hoch": [e for e in CLS[2] if far(e)],
+        "Cluster 3+ >30% unter Hoch": [e for e in CLS[3] if far(e)],
+    }
     if IE:
+        cands["Insider >=100K"] = [e for e in IE if e["val"] >= 1e5 and e.get("price", 0) >= 5]
         cands["Insider Officer >=100K Kurs>=10$"] = [e for e in IE if e["officer"] and e["val"] >= 1e5 and e.get("price", 0) >= 10]
-        cands["Insider-Cluster>=3 >=100K"] = [e for e in IE if e.get("n30", 0) >= 3 and e["val"] >= 1e5 and e.get("price", 0) >= 10]
+        cands["Insider-Cluster>=3 >=100K"] = [e for e in IE if e.get("n30", 0) >= 3 and e["val"] >= 1e5 and e.get("price", 0) >= 5]
+        cands["Insider >=100K >30% unter Hoch"] = [e for e in IE if e["val"] >= 1e5 and e.get("price", 0) >= 5 and far(e)]
+        cands["Politiker-Kauf + Insider 60T"] = [e for e in CE if e.get("insider60")]
     for cname, evs in cands.items():
         for h in ("30", "60", "90"):
-            for stop in (None, 0.08, 0.15):
+            for stop in (None, 0.10):
                 for tp in (None, 0.10, 0.20):
                     T[f"Exit {cname}|{h}|Stop {int(stop*100) if stop else '–'} / TP {int(tp*100) if tp else '–'}"] = summarize(attach(P, evs, H[h], stop, tp))
-
-    # Jahresverläufe für die Hauptkandidaten
+    R["portfolio"] = {}
     for cname, evs in cands.items():
         R["years"][cname] = years(attach(P, evs, H["60"]))
+        for h in ("30", "60"):
+            R["portfolio"][f"{cname} | {h} T"] = portfolio(P, evs, H[h], dates)
 
     R["log"] = LOG[-60:]
     R["runtime_s"] = round(time.time() - t0)
@@ -494,11 +655,12 @@ def run():
 def write_summary(R):
     L = [f"# Edge-Forschung (Kurse bis {R['asof']})", "",
          f"SPY war nach 30/60/90 Tagen in {R['spy_up_rate']} % der Fälle im Plus (Grundrate für 'Trefferquote absolut').", "",
-         "Spalten: n · schlägt S&P % · im Plus % · Ø vs S&P % · Median · t — jeweils IS (2020–23) | OOS (2024–26)", ""]
+         "Spalten: n · schlägt S&P % · im Plus % · Ø vs S&P % · Median · t ‖ β-bereinigt: schlägt % · Ø · t — jeweils IS (2020–23) | OOS (2024–26)", ""]
     def c(s):
         if not s or s.get("n", 0) < 10:
             return f"n={s.get('n', 0) if s else 0}"
-        return f"{s['n']} · {s['beat']} · {s['win']} · {s['ex']:+.2f} · {s['med']:+.2f} · {s['t']}"
+        b = f" ‖ β {s['bbeat']} · {s['bex']:+.2f} · {s['bt']}" if "bex" in s else ""
+        return f"{s['n']} · {s['beat']} · {s['win']} · {s['ex']:+.2f} · {s['med']:+.2f} · {s['t']}{b}"
     cur = None
     for k, v in R["tables"].items():
         grp = k.split("|")[0]
@@ -507,6 +669,9 @@ def write_summary(R):
             cur = grp
         _, h, name = k.split("|", 2)
         L.append(f"| {h} | {name} | {c(v['is'])} | {c(v['oos'])} |")
+    L += ["", "## Portfolio (gleichgewichtet, alle offenen Positionen)", "", "| Kandidat | long p.a. | long MaxDD | gehedgt p.a. | gehedgt MaxDD | Sharpe geh. | Ø Pos. | investiert % | gehedgt je Jahr |", "|---|---|---|---|---|---|---|---|---|"]
+    for k, v in R.get("portfolio", {}).items():
+        L.append(f"| {k} | {v['long']['cagr']} | {v['long']['mdd']} | {v['hedged']['cagr']} | {v['hedged']['mdd']} | {v['hedged']['sharpe']} | {v['avg_pos']} | {v['invested']} | {v['hedged']['years']} |")
     L += ["", "## Jahre (60 T, gehedgt)", "", "```", json.dumps(R["years"], ensure_ascii=False), "```", "", "## Log", "", "```", *R["log"], "```"]
     md = "\n".join(L)
     open(os.path.join(OUT, "research.md"), "w").write(md)
