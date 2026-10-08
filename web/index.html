@@ -158,7 +158,7 @@ td.rank{color:var(--muted);font-family:var(--f-mono);font-size:12px;width:1%}
 .favstats>div{display:grid;gap:2px;align-content:start}
 .favstats .k{font:500 10px/1.2 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .favstats b{font-size:15px;font-variant-numeric:tabular-nums}
-.gsearch{position:relative;flex:1 1 240px;max-width:360px;min-width:0}
+.gsearch{position:relative;flex:1 1 200px;max-width:280px;min-width:0}
 .gsearch input{width:100%;height:36px;border-radius:9px;background:var(--surface-2)}
 .gres{position:absolute;left:0;min-width:min(440px,calc(100vw - 32px));top:calc(100% + 6px);background:var(--surface);border:1px solid var(--line-2);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.18);padding:4px;z-index:40;max-height:70vh;overflow:auto}
 .gr{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;text-decoration:none;min-width:0}
@@ -191,6 +191,18 @@ td.rank{color:var(--muted);font-family:var(--f-mono);font-size:12px;width:1%}
 .pill.new{background:var(--accent-soft);color:var(--accent)}
 .mv{font:600 12px var(--f-mono);white-space:nowrap}
 @media (max-width:760px){.t5stats{grid-template-columns:repeat(2,minmax(0,1fr))}.sbars{grid-template-columns:repeat(2,minmax(0,1fr))}.t5card{grid-template-columns:44px minmax(0,1fr)}.t5rank{font-size:26px}}
+.sgtrack{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.sggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
+.sgcard{display:grid;gap:10px;padding:14px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);text-decoration:none;min-width:0}
+.sgcard:hover{border-color:var(--accent)}
+.sgcard.L{box-shadow:inset 0 3px 0 var(--pos)}.sgcard.S{box-shadow:inset 0 3px 0 var(--neg)}
+.sghead{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.sgdir{font:700 11px/1 var(--f-mono);letter-spacing:.06em;padding:4px 8px;border-radius:5px}
+.sgdir.L{background:var(--pos-soft);color:var(--pos)}.sgdir.S{background:var(--neg-soft);color:var(--neg)}
+.sgtick{display:grid;min-width:0}.sgtick b{font:600 22px/1.1 var(--f-mono)}.sgtick span{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sgwho{display:grid;gap:6px;font-size:13px}
+.sgnums{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.sgnums>div{display:grid;gap:1px}.sgnums b{font-variant-numeric:tabular-nums}
+.sgbar{height:5px;border-radius:3px;background:var(--line);overflow:hidden}.sgbar i{display:block;height:100%;background:var(--accent)}
 /* ---------- misc layout */
 .grid2{display:grid;grid-template-columns:minmax(0,1fr);gap:18px}
 .split{display:grid;grid-template-columns:minmax(0,1fr);gap:18px}
@@ -214,8 +226,9 @@ details.help[open] summary{margin-bottom:8px}
 <body>
 <header class="top">
   <div class="top-in">
-    <a class="brand" href="#top"><b>Capitol <i>Signals</i></b><small>STOCK-Act-Tracker</small></a>
+    <a class="brand" href="#sig"><b>Capitol <i>Signals</i></b><small>STOCK-Act-Tracker</small></a>
     <nav class="tabs" id="tabs">
+      <a href="#sig" data-v="sig">Signale</a>
       <a href="#top" data-v="top">Top 5</a>
       <a href="#hot" data-v="hot">Hot Stocks</a>
       <a href="#fav" data-v="fav">★ Favoriten</a>
@@ -230,5 +243,6 @@ details.help[open] summary{margin-bottom:8px}
 <main id="app"><div class="loading">Lade Trades und Kurse …</div></main>
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="app.js"></script>
+<script src="signals.js"></script>
 </body>
 </html>
