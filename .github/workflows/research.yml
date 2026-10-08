@@ -1,0 +1,35 @@
+# Edge-Forschung: testet Filter, Firmen-Insider (SEC) und Exit-Regeln. Ergebnis steht in der Zusammenfassung des Laufs.
+name: Edge-Forschung
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: prices-${{ github.run_id }}
+          restore-keys: prices-
+      - run: pip install -r requirements.txt
+      - run: python research/edge.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: research
+          path: research_out
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: cache
+          key: prices-${{ github.run_id }}
