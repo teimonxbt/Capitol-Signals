@@ -149,16 +149,17 @@ def download_batch(symbols, start):
     """Lädt Schlusskurse. Gibt (DataFrame, Menge der Ticker mit Rate-Limit/Netzfehler) zurück."""
     import yfinance as yf
     try:
-        yf.shared._ERRORS.clear()
+        import yfinance.shared as yfs   # Fehlerliste (je nach yfinance-Version vorhanden)
+        yfs._ERRORS.clear()
     except Exception:  # noqa
-        pass
+        yfs = None
     try:
         df = yf.download(symbols, start=start, auto_adjust=True, progress=False,
                          threads=2, group_by="column")
     except Exception as e:  # noqa
         log(f"  Fehler: {e.__class__.__name__}: {e}")
         return pd.DataFrame(), set(symbols)
-    errs = dict(getattr(yf.shared, "_ERRORS", {}) or {})
+    errs = dict(getattr(yfs, "_ERRORS", {}) or {}) if yfs is not None else {}
     limited = {t for t, msg in errs.items() if any(h in str(msg).lower() for h in RATE_HINTS)}
     if df is None or df.empty:
         return pd.DataFrame(), limited
@@ -264,7 +265,7 @@ def load_prices(symbols, full=False, downloader=download_batch):
                 got = set(df.columns) if df is not None and not df.empty else set()
                 any_got = any_got or bool(got)
                 fails = [s for s in todo if s not in got]
-                if len(todo) >= 4 and len(fails) > len(todo) / 3:
+                if (len(todo) >= 4 and len(fails) > len(todo) / 3) or (len(todo) < 4 and not got):
                     limited = set(fails)
                 todo = [s for s in fails if s in limited]
                 if not todo:
