@@ -136,10 +136,10 @@ const $ = s => document.querySelector(s);
 // ------------------------------------------------------------------ router
 function route() {
   killCharts();
-  const h = decodeURIComponent(location.hash.slice(1)) || "top";
+  const h = decodeURIComponent(location.hash.slice(1)) || "sig";
   const v = h.split(".")[0];
   document.querySelectorAll("#tabs a").forEach(a => a.toggleAttribute("aria-current", false));
-  const tab = { top: "top", hot: "hot", fav: "fav", members: "members", m: "members", trades: "trades", t: "trades", bt: "bt" }[v] || "top";
+  const tab = { sig: "sig", top: "top", hot: "hot", fav: "fav", members: "members", m: "members", trades: "trades", t: "trades", bt: "bt" }[v] || "sig";
   document.querySelector(`#tabs a[data-v="${tab}"]`)?.setAttribute("aria-current", "page");
   const app = $("#app");
   try {
@@ -149,6 +149,7 @@ function route() {
     else if (v === "t") viewTicker(app, h.slice(2));
     else if (v === "bt") viewBacktest(app);
     else if (v === "fav") viewFav(app);
+    else if (v === "sig" && window.CS_SIG) window.CS_SIG.view(app);
     else if (v === "hot") viewHot(app);
     else viewTop(app);
   } catch (e) { console.error(e); app.innerHTML = `<div class="err">Fehler beim Anzeigen: ${esc(e.message)}</div>`; }
@@ -198,7 +199,7 @@ function viewTop(app) {
   const picks = i => BYM[i].filter(t => t.side === "P" && t.kind === "st").slice(0, 3);
   app.innerHTML = `
   <div class="view-head"><div><div class="eyebrow">Weekly Top 5 · KW ${isoWeek(DATES[wk])} · Stand ${dDE(DATES[wk])}</div><h1>Die fünf stärksten Trader der Woche</h1>
-    <p>Automatisch aus allen ${M.length} Politikern in Kongress und Regierung gefiltert. Der Capitol Score bewertet Trefferquote, Outperformance gegenüber dem S&amp;P 500, Rendite, Aktivität und Verlustbegrenzung zusammen, gemessen ab Veröffentlichung.</p></div>
+    <p>Automatisch aus allen ${M.length} Politikern in Kongress und Regierung gefiltert. Der Capitol Score bewertet Trefferquote, Outperformance gegenüber dem S&amp;P 500, Rendite, Aktivität und Verlustbegrenzung zusammen, gemessen ab Veröffentlichung. Eine gute Bilanz hat sich in unseren Tests aber nicht verlässlich fortgesetzt; für Kauf- und Verkaufssignale siehe <a class="back" href="#sig"><b>Signale</b></a>.</p></div>
     <button class="btn primary" id="t5bt">Top 5 im Backtest testen</button></div>
   <div class="top5">${top.map(r => { const m = M[r.i]; return `<article class="t5card">
       <div class="t5rank">${r.rank}</div>
@@ -715,6 +716,9 @@ async function runBacktest() {
   const st = c.addLineSeries({ color: tok("--accent"), lineWidth: 2, priceLineVisible: false, lastValueVisible: true, title: "Strategie" }); st.setData(A.eq);
   c.timeScale().fitContent();
 }
+
+// ------------------------------------------------------------------ API für signals.js
+window.CS = { get M() { return M; }, get T() { return T; }, get DATES() { return DATES; }, get SPY() { return SPY; }, get META() { return META; }, PX, loadPx, pxAt, esc, pct, pc, cls, dDE, amt, money, who, pty, tickLink, seg, onSeg, chartOpts, tok, nf0, nf1, nf2, bindRowLinks, addChart: c => charts.push(c) };
 
 // ------------------------------------------------------------------ boot
 window.addEventListener("hashchange", route);
