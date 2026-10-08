@@ -441,7 +441,7 @@ def export(members, rows, dates, px):
         if i is not None:
             first_need[r["t"]] = min(first_need.get(r["t"], i), i)
     for c in px.columns:
-        if c not in needed and c != BENCH:
+        if c not in needed and c not in (BENCH, "QQQ"):
             continue
         s = px[c].values
         lo = 0 if c == BENCH else max(0, first_need.get(c, 0) - 130)   # ~6 Monate Chart-Vorlauf
@@ -480,9 +480,14 @@ def main(argv=None, downloader=download_batch):
     ap.add_argument("--full", action="store_true", help="Kurscache verwerfen und alles neu laden")
     a = ap.parse_args(argv)
     members, trades = load_trades()
-    prices = load_prices({t["t"] for t in trades}, full=a.full, downloader=downloader)
+    prices = load_prices({t["t"] for t in trades} | {"QQQ"}, full=a.full, downloader=downloader)
     dates, px, rows = compute(members, trades, prices)
     export(members, rows, dates, px)
+    import signals
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    site = f"https://{repo.split('/')[0]}.github.io/{repo.split('/')[1]}/" if "/" in repo else ""
+    sigs = signals.write_signals(OUT, CACHE, members, rows, dates, px, BENCH, site)
+    log(f"Signale: {sum(s['active'] for s in sigs)} aktiv, {len(sigs)} gesamt")
 
 
 if __name__ == "__main__":
