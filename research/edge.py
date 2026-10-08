@@ -645,6 +645,33 @@ def run():
         for h in ("30", "60"):
             R["portfolio"][f"{cname} | {h} T"] = portfolio(P, evs, H[h], dates)
 
+    # ---- Detailprüfung des besten Kandidaten: Politiker-Cluster in stark gefallenen Aktien
+    R["detail"] = {}
+    for thr in (-0.30, -0.35, -0.40, -0.45, -0.50):
+        for mn in (2, 3):
+            sel = [e for e in CLS[mn] if e.get("from_high") is not None and e["from_high"] <= thr]
+            for h in ("30", "60"):
+                T[f"Schwelle Cluster {mn}+|{h}|<= {int(thr*100)}% unter Hoch"] = summarize(attach(P, sel, H[h]))
+        sel = [e for e in CE if e.get("from_high") is not None and e["from_high"] <= thr]
+        T[f"Schwelle Einzelkauf|30|<= {int(thr*100)}% unter Hoch"] = summarize(attach(P, sel, H["30"]))
+    deep = [e for e in CLS[2] if e.get("from_high") is not None and e["from_high"] <= -0.40]
+    for h in ("30", "60"):
+        R["portfolio"][f"Cluster 2+ >=40% unter Hoch | {h} T"] = portfolio(P, deep, H[h], dates)
+        for stop in (None, 0.15):
+            for tp in (None, 0.15, 0.25):
+                T[f"Exit Cluster 2+ >=40% unter Hoch|{h}|Stop {int(stop*100) if stop else '–'} / TP {int(tp*100) if tp else '–'}"] = summarize(attach(P, deep, H[h], stop, tp))
+    R["years"]["Cluster 2+ >=40% unter Hoch (30 T)"] = years(attach(P, deep, H["30"]))
+    R["years"]["Einzelkauf >=40% unter Hoch (30 T)"] = years(attach(P, [e for e in CE if e.get("from_high") is not None and e["from_high"] <= -0.40], H["30"]))
+    a30 = {(e["t"], e["d"]): e for e in attach(P, deep, H["30"])}
+    a60 = {(e["t"], e["d"]): e for e in attach(P, deep, H["60"])}
+    R["detail"]["Cluster 2+ >=40% unter Hoch"] = [
+        [e["d"], e["t"], e["n"], round(e["from_high"] * 100), round(e.get("beta") or 1, 2),
+         None if (e["t"], e["d"]) not in a30 else round(a30[(e["t"], e["d"])]["ex"] * 100, 1),
+         None if (e["t"], e["d"]) not in a30 else round(a30[(e["t"], e["d"])]["exb"] * 100, 1),
+         None if (e["t"], e["d"]) not in a60 else round(a60[(e["t"], e["d"])]["ex"] * 100, 1),
+         round(e.get("price", 0), 2)]
+        for e in sorted(deep, key=lambda e: e["d"])]
+
     R["log"] = LOG[-60:]
     R["runtime_s"] = round(time.time() - t0)
     json.dump(R, open(os.path.join(OUT, "research.json"), "w"), ensure_ascii=False)
@@ -672,7 +699,11 @@ def write_summary(R):
     L += ["", "## Portfolio (gleichgewichtet, alle offenen Positionen)", "", "| Kandidat | long p.a. | long MaxDD | gehedgt p.a. | gehedgt MaxDD | Sharpe geh. | Ø Pos. | investiert % | gehedgt je Jahr |", "|---|---|---|---|---|---|---|---|---|"]
     for k, v in R.get("portfolio", {}).items():
         L.append(f"| {k} | {v['long']['cagr']} | {v['long']['mdd']} | {v['hedged']['cagr']} | {v['hedged']['mdd']} | {v['hedged']['sharpe']} | {v['avg_pos']} | {v['invested']} | {v['hedged']['years']} |")
-    L += ["", "## Jahre (60 T, gehedgt)", "", "```", json.dumps(R["years"], ensure_ascii=False), "```", "", "## Log", "", "```", *R["log"], "```"]
+    for k, rows_ in R.get("detail", {}).items():
+        L += ["", f"## Einzelfälle: {k}", "", "Datum · Ticker · Käufer · % unter Hoch · Beta · vs S&P 30T · β-ber. 30T · vs S&P 60T · Kurs", "```"]
+        L += [" · ".join(str(x) for x in r) for r in rows_]
+        L += ["```"]
+    L += ["", "## Jahre (gehedgt)", "", "```", json.dumps(R["years"], ensure_ascii=False), "```", "", "## Log", "", "```", *R["log"], "```"]
     md = "\n".join(L)
     open(os.path.join(OUT, "research.md"), "w").write(md)
     sp = os.environ.get("GITHUB_STEP_SUMMARY")
