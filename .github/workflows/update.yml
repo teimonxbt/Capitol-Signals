@@ -10,6 +10,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  issues: write
 
 concurrency:
   group: pages
@@ -39,6 +40,14 @@ jobs:
       - run: pip install -r requirements.txt
 
       - run: python update.py
+
+      # Neue Cluster-Signale als GitHub-Issue melden (GitHub schickt dir dazu eine E-Mail)
+      - name: Benachrichtigung bei neuen Signalen
+        if: hashFiles('alerts.md') != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue create --repo "$GITHUB_REPOSITORY" --title "$(head -n 1 alerts.md)" --body-file alerts.md --assignee "$GITHUB_REPOSITORY_OWNER"
 
       - uses: actions/cache/save@v4
         if: always()
