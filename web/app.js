@@ -174,18 +174,20 @@ function keepScroll(fn) { const y = window.scrollY; fn(); window.scrollTo(0, y);
 function viewCluster(app, keep) {
   const h = S.h, C = D.clusters[S.mn];
   const all = C.signals;
-  const list = S.cm === "cm" ? all.filter(s => s.cm.length) : all;
+  const isDip = s => s.fh != null && s.fh <= D.dip;
+  const list = S.cm === "cm" ? all.filter(s => s.cm.length) : S.cm === "dip" ? all.filter(isDip) : all;
   const open = list.filter(s => isOpen(s, h));
   const st = stats(list, h);
-  const pts = curveFrom(C.curves[h + (S.cm === "cm" ? "c" : "")]);
+  const pts = curveFrom(C.curves[h + (S.cm === "cm" ? "c" : S.cm === "dip" ? "d" : "")] || C.curves[h]);
   const render = () => {
     app.innerHTML = `
     <div class="view-head"><div><div class="eyebrow">Strategie 1</div><h1>Cluster-Käufe</h1><p>Mehrere Politiker kaufen innerhalb von ${D.win} Tagen dieselbe Aktie. Gekauft wird zum Schlusskurs nach der Meldung, verkauft nach ${h} Tagen.</p></div>
       <div class="controls"><label class="ctl"><span>Mindestens Käufer</span>${seg("mn", [["2", "2"], ["3", "3"], ["4", "4"]], S.mn)}</label>
-      <label class="ctl"><span>Filter</span>${seg("cmf", [["all", "Alle"], ["cm", "Nur mit Ausschuss-Bonus"]], S.cm)}</label></div></div>
+      <label class="ctl"><span>Filter</span>${seg("cmf", [["all", "Alle"], ["cm", "Ausschuss-Bonus"], ["dip", `Dip (≥${-D.dip} % unter Hoch)`]], S.cm)}</label></div></div>
     <h3 class="sec">Jetzt aktiv <small>${open.length ? `${open.length} offene Signal${open.length === 1 ? "" : "e"} bei ${h} Tagen Haltedauer` : ""}</small></h3>
     ${open.length ? `<div class="cards">${open.map(s => clusterCard(s, h)).join("")}</div>` : `<div class="panel empty">Gerade kein offenes Signal. Neue Signale kommen als Benachrichtigung.</div>`}
-    <h3 class="sec">Backtest seit 2020 <small>${S.mn}+ Käufer · ${S.cm === "cm" ? "nur mit Ausschuss-Bonus" : "alle Cluster"} · ${h} Tage halten</small></h3>
+    <h3 class="sec">Backtest seit 2020 <small>${S.mn}+ Käufer · ${S.cm === "cm" ? "nur mit Ausschuss-Bonus" : S.cm === "dip" ? `nur Dip-Cluster (≥${-D.dip} % unter 52W-Hoch)` : "alle Cluster"} · ${h} Tage halten</small></h3>
+    ${S.cm === "dip" ? `<div class="note"><b>Ehrlich:</b> Dip-Cluster waren in unserer Forschung der einzige Bereich, der in beiden Testzeiträumen (2020–23 und 2024–26) in über 60 % der Fälle den S&amp;P geschlagen hat, am besten mit 2+ Käufern und 30 Tagen Haltedauer. Es sind aber nur rund 10–20 Fälle pro Jahr, ein großer Teil stammt aus Erholungen nach Crashs (2020, April 2025), und 2026 lag die Quote nur bei etwa 50 %. Als Zusatzfilter sinnvoll, nicht als Garantie.</div>` : ""}
     ${verdict(st, "Cluster-Signale")}
     ${tiles(st, pts, "Signal")}
     ${eqPanel("eq", "Kapitalkurve")}
@@ -195,6 +197,7 @@ function viewCluster(app, keep) {
       `Signal: mindestens ${S.mn} verschiedene Politiker melden innerhalb von ${D.win} Tagen einen Kauf derselben Aktie, und es gibt mehr Käufer als Verkäufer.`,
       `Einstieg zum Schlusskurs des ersten Handelstags nach der auslösenden Meldung, Ausstieg nach ${h} Kalendertagen (${HD[h]} Handelstage).`,
       `Pro Aktie höchstens ein Signal je ${D.cooldown} Handelstage. Dividenden-Reinvestitionen zählen nicht als Kauf.`,
+      `<span class="badge dip">▼ Dip</span>: die Aktie notiert beim Signal ${-D.dip} % oder mehr unter ihrem 52-Wochen-Hoch.`,
       `<span class="cmk">★ Ausschuss-Bonus</span>: mindestens ein Käufer sitzt in einem Ausschuss, der die Branche der Aktie beaufsichtigt (aktuelle Mitgliedschaften).`,
     ])}`;
     onSeg("mn", v => { S.mn = v; save(); keepScroll(() => viewCluster(app, true)); });
@@ -208,15 +211,18 @@ function clusterCard(s, h) {
   const cm = new Set(s.cm), t = D.tickers[s.t] || {};
   return `<a class="card" href="#t.${encodeURIComponent(s.t)}">
     <div class="card-h"><div class="ctk"><b>${esc(s.t)}</b><span>${esc(t.a || "")}</span></div>
-      <div style="display:grid;gap:4px;justify-items:end">${s.i == null || LAST - s.i < 5 ? '<span class="badge new">neu</span>' : ""}${cm.size ? '<span class="badge cm">★ Ausschuss-Bonus</span>' : ""}</div></div>
-    <div class="cwho"><b>${s.n} Käufer</b>${s.o ? ` · <span class="neg">${s.o} Verkäufer</span>` : ""} · bis ${dS(s.d)} gemeldet · ~${money(s.vol)}<br>${names(s.m, cm, 6)}</div>
+      <div style="display:grid;gap:4px;justify-items:end">${s.i == null || LAST - s.i < 5 ? '<span class="badge new">neu</span>' : ""}${s.fh != null && s.fh <= D.dip ? `<span class="badge dip">▼ Dip ${nf0.format(s.fh)} %</span>` : ""}${cm.size ? '<span class="badge cm">★ Ausschuss-Bonus</span>' : ""}</div></div>
+    <div class="cwho"><b>${s.n} Käufer</b>${s.o ? ` · <span class="neg">${s.o} Verkäufer</span>` : ""} · bis ${dS(s.d)} gemeldet · ~${money(s.vol)}${s.fh != null ? ` · ${nf0.format(s.fh)} % zum 52W-Hoch` : ""}<br>${names(s.m, cm, 6)}</div>
     ${liveNums(s, h)}</a>`;
 }
 function cmCompare(all, h) {
   const a = stats(all.filter(s => s.cm.length), h), b = stats(all.filter(s => !s.cm.length), h);
-  return `<div class="panel"><div class="panel-h"><h2>Mit vs. ohne Ausschuss-Bonus</h2><span class="sub">${S.mn}+ Käufer · ${h} Tage</span></div><div class="tbl-wrap"><table><thead><tr><th></th><th class="n">Anzahl</th><th class="n">Ø Rendite</th><th class="n">Ø vs S&amp;P</th><th class="n">schlägt S&amp;P</th></tr></thead><tbody>
+  const dp = s => s.fh != null && s.fh <= D.dip, c = stats(all.filter(dp), h), d = stats(all.filter(s => !dp(s)), h);
+  return `<div class="panel"><div class="panel-h"><h2>Teilbereiche im Vergleich</h2><span class="sub">${S.mn}+ Käufer · ${h} Tage</span></div><div class="tbl-wrap"><table><thead><tr><th></th><th class="n">Anzahl</th><th class="n">Ø Rendite</th><th class="n">Ø vs S&amp;P</th><th class="n">schlägt S&amp;P</th></tr></thead><tbody>
     <tr><td><span class="cmk">★</span> mit Bonus</td><td class="n">${a.n}</td><td class="n">${pc(a.r)}</td><td class="n">${pc(a.ex)}</td><td class="n">${q(a.beat)}</td></tr>
-    <tr><td>ohne</td><td class="n">${b.n}</td><td class="n">${pc(b.r)}</td><td class="n">${pc(b.ex)}</td><td class="n">${q(b.beat)}</td></tr></tbody></table></div>
+    <tr><td>ohne Bonus</td><td class="n">${b.n}</td><td class="n">${pc(b.r)}</td><td class="n">${pc(b.ex)}</td><td class="n">${q(b.beat)}</td></tr>
+    <tr><td><span class="badge dip">▼ Dip</span> ≥${-D.dip} % unter Hoch</td><td class="n">${c.n}</td><td class="n">${pc(c.r)}</td><td class="n">${pc(c.ex)}</td><td class="n">${q(c.beat)}</td></tr>
+    <tr><td>kein Dip</td><td class="n">${d.n}</td><td class="n">${pc(d.r)}</td><td class="n">${pc(d.ex)}</td><td class="n">${q(d.beat)}</td></tr></tbody></table></div>
     <p class="hint" style="margin:0;padding:10px 16px">Ausschuss-Mitgliedschaften sind nur für den aktuellen Kongress (seit 2025) verfügbar; ältere Signale werden mit den heutigen Ausschüssen bewertet.</p></div>`;
 }
 
