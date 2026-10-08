@@ -260,12 +260,19 @@ def load_prices(symbols, full=False, downloader=download_batch):
             todo = list(batch)
             any_got = False
             for attempt in range(4):
-                df, limited = downloader(todo, start)
+                # SPY läuft als Kontrolle mit: fehlt SPY, bremst Yahoo; sonst sind Lücken echte Delistings
+                req = todo if BENCH in todo else todo + [BENCH]
+                df, limited = downloader(req, start)
+                if df is not None and not df.empty and BENCH not in todo and BENCH in df.columns:
+                    df = df.drop(columns=[BENCH])
+                    canary = True
+                else:
+                    canary = BENCH in todo and df is not None and BENCH in df.columns
                 merge(df)
                 got = set(df.columns) if df is not None and not df.empty else set()
-                any_got = any_got or bool(got)
+                any_got = any_got or bool(got) or canary
                 fails = [s for s in todo if s not in got]
-                if (len(todo) >= 4 and len(fails) > len(todo) / 3) or (len(todo) < 4 and not got):
+                if fails and not canary:
                     limited = set(fails)
                 todo = [s for s in fails if s in limited]
                 if not todo:
