@@ -1,0 +1,54 @@
+# Aktualisiert die Daten jeden Werktag nach US-Börsenschluss und veröffentlicht die Webseite auf GitHub Pages.
+name: Daten aktualisieren und veröffentlichen
+
+on:
+  schedule:
+    - cron: "17 23 * * 1-5"   # 23:17 UTC = nach US-Börsenschluss
+  workflow_dispatch: {}        # manuell starten: Actions -> "Run workflow"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Kurs-Cache vom letzten Lauf (sonst wird der mitgelieferte Start-Cache aus dem Repo genutzt)
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: prices-${{ github.run_id }}
+          restore-keys: prices-
+
+      - run: pip install -r requirements.txt
+
+      - run: python update.py
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: cache
+          key: prices-${{ github.run_id }}
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4
