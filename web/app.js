@@ -127,12 +127,12 @@ function viewMain(app) {
   <div class="tiles">
     <div class="tile"><div class="k">Schlägt den S&amp;P</div><div class="v">${q(st.beat)}</div><div class="d">im Plus: ${q(st.hit)}</div></div>
     <div class="tile"><div class="k">Ø pro Trade vs S&amp;P</div><div class="v ${cls(st.ex)}">${pct(st.ex)}</div><div class="d">Median ${pct(st.med)} · Ø Rendite ${pct(st.r)}</div></div>
-    <div class="tile"><div class="k">Portfolio pro Jahr</div><div class="v ${cls(a.cagr - sp.cagr)}">${pct(a.cagr)}</div><div class="d">S&amp;P ${pct(sp.cagr)} · Geld oft ungenutzt</div></div>
-    <div class="tile"><div class="k">Max. Rückgang</div><div class="v neg">${pct(a.mdd)}</div><div class="d">S&amp;P ${pct(sp.mdd)}</div></div>
+    <div class="tile"><div class="k">Depot pro Jahr</div><div class="v ${cls(a.cagr - sp.cagr)}">${pct(a.cagr)}</div><div class="d">nur S&amp;P: ${pct(sp.cagr)} · Plus ${pct(a.cagr - sp.cagr)} p.a.</div></div>
+    <div class="tile"><div class="k">Max. Rückgang Depot</div><div class="v neg">${pct(a.mdd)}</div><div class="d">nur S&amp;P: ${pct(sp.mdd)}</div></div>
     <div class="tile"><div class="k">Signale</div><div class="v">${nf0.format(st.n)}</div><div class="d">≈ ${nf0.format(st.n / Math.max(1, (Date.parse(D.asof) - Date.parse("2020-01-01")) / 3.156e10))} pro Jahr</div></div>
   </div>
-  <div class="panel"><div class="panel-h"><h2>Kapitalkurve</h2><div class="legend-row"><span><span class="sw" style="background:var(--accent)"></span>Dip-Cluster</span><span><span class="sw" style="background:var(--chart-spy)"></span>S&amp;P 500</span><span><span class="sw dash" style="border-color:var(--ink-2)"></span>Nasdaq 100</span></div></div>
-    <div class="panel-b"><div class="chart sm" id="eq"></div><p class="hint" style="margin:8px 0 0">Alle offenen Positionen gleich gewichtet, ohne Stop, ungenutztes Geld in Cash (0 %). Da es nur wenige Signale gibt, ist das Geld oft nicht investiert. Die Kurve zeigt deshalb weniger als die Ø-Werte pro Trade.</p></div></div>
+  <div class="panel"><div class="panel-h"><h2>Depot nach den Regeln</h2><div class="legend-row"><span><span class="sw" style="background:var(--accent)"></span>S&amp;P + Dip-Cluster</span><span><span class="sw" style="background:var(--chart-spy)"></span>S&amp;P 500</span><span><span class="sw dash" style="border-color:var(--ink-2)"></span>Nasdaq 100</span></div></div>
+    <div class="panel-b"><div class="chart sm" id="eq"></div><p class="hint" style="margin:8px 0 0">Simulation: Das Depot liegt im S&amp;P 500, jedes Dip-Cluster bekommt ${RU.size} % des Depots (höchstens 5 gleichzeitig), mit Notfall-Stop ${RU.stop} % und Verkauf nach ${RU.days} Tagen. Ohne Gebühren und Steuern. Der Abstand zur S&amp;P-Linie ist der Mehrwert der Strategie.</p></div></div>
   <div class="grid2">
     <div class="panel"><div class="panel-h"><h2>Nach Jahr</h2></div><div class="tbl-wrap"><table><thead><tr><th>Jahr</th><th class="n">Signale</th><th class="n">schlägt S&amp;P</th><th class="n">Ø vs S&amp;P</th></tr></thead><tbody>${st.years.map(y => `<tr><td class="num">${y.y}</td><td class="n">${y.n}</td><td class="n">${q(y.beat)}</td><td class="n">${pc(y.ex)}</td></tr>`).join("")}</tbody></table></div></div>
     <div class="note"><b>Ehrlich:</b> Nur rund 15 Signale pro Jahr. Ein großer Teil der Gewinne kam nach Markt-Crashs (2020, April 2025). In ruhigen Märkten gibt es weniger und schwächere Signale. Getestet wurden auch normale Cluster, Ausschuss-Käufe, Top-Politiker, Firmen-Insider, technische Filter sowie Haltedauern von 60 und 90 Tagen: Nichts davon schlug den S&amp;P verlässlich, deshalb ist es nicht mehr auf der Seite. Keine Anlageberatung.</div>
@@ -185,7 +185,7 @@ function drawEq(pts) {
   const add = (key, color, style, title) => { const s = c.addLineSeries({ color, lineWidth: 2, lineStyle: style, priceLineVisible: false, lastValueVisible: true, title }); s.setData(pts.filter(p => p[key] != null).map(p => ({ time: p.time, value: (p[key] - 1) * 100 }))); };
   add("spy", tok("--chart-spy"), 0, "S&P");
   if (pts[0].qqq != null) add("qqq", tok("--ink-2"), 2, "Nasdaq");
-  add("s", tok("--accent"), 0, "Dip-Cluster");
+  add("s", tok("--accent"), 0, "S&P + Dip");
   c.timeScale().fitContent();
 }
 
