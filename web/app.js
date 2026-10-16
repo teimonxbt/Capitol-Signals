@@ -38,6 +38,7 @@ const short = n => { const p = String(n).split(/\s+/).filter(w => !/^(Hon\.?|Jr\
 const party = m => m.chamber === "executive" ? "Reg." : (m.party || "I") + (m.state ? "-" + m.state : "");
 const pspan = m => `<span class="party ${esc(m.chamber === "executive" ? "E" : m.party || "I")}">${esc(party(m))}</span>`;
 const names = (ids, max = 6) => ids.slice(0, max).map(i => esc(short(mem(i).name))).join(", ") + (ids.length > max ? ` +${ids.length - max}` : "");
+const who = s => `${s.n} ${s.n === 1 ? "Politiker" : "Käufer"}${s.ins ? " + Firmen-Insider" : ""}${s.big ? ` (Kauf ab ${money(s.big)})` : ""}`;
 const tickLink = t => `<a class="tick" href="#t.${encodeURIComponent(t)}">${esc(t)}</a>`;
 function killCharts() { charts.forEach(c => { try { c.remove(); } catch (e) {} }); charts = []; }
 function dateAt(i) {
@@ -180,7 +181,7 @@ function viewMain(app) {
   const cmp = D.compare;
   app.innerHTML = `
   <div class="view-head"><div><div class="eyebrow">Strategie</div><h1>Dip-Cluster</h1>
-    <p>Mindestens ${RU.min_n} Politiker kaufen innerhalb von ${RU.win} Tagen dieselbe Aktie, die ${-RU.dip} % oder mehr unter ihrem 52-Wochen-Hoch steht. Kaufen zum Schlusskurs nach der Meldung, nach ${RU.days} Tagen verkaufen.</p></div>
+    <p>Mindestens ${RU.min_n} Politiker kaufen innerhalb von ${RU.win} Tagen dieselbe Aktie (oder ein einzelner Politiker kauft für ${money(RU.big || 100000)} oder mehr), die ${-RU.dip} % oder mehr unter ihrem 52-Wochen-Hoch steht. Kaufen zum Schlusskurs nach der Meldung, nach ${RU.days} Tagen verkaufen.</p></div>
     <label class="ctl"><span>Dein Konto (für Positionsgröße)</span><input type="number" id="depot" min="0" step="1000" placeholder="z. B. 10000" value="${CFG.cap || ""}" style="width:160px"></label></div>
 
   <h3 class="sec">Jetzt offen <small>${open.length ? `${open.length} Signal${open.length === 1 ? "" : "e"}` : ""}</small></h3>
@@ -229,7 +230,7 @@ function card(s) {
   return `<a class="card" href="#t.${encodeURIComponent(s.t)}">
     <div class="card-h"><div class="ctk"><b>${esc(s.t)}</b><span>${esc(t.a || "")}</span></div>
       <div style="display:grid;gap:4px;justify-items:end">${st.pending || LAST - s.i < 5 ? '<span class="badge new">neu</span>' : ""}<span class="badge dip">▼ ${nf0.format(s.fh)} % unter Hoch</span></div></div>
-    <div class="cwho"><b>${s.n} Käufer</b>${s.o ? ` · <span class="neg">${s.o} Verkäufer</span>` : ""} · bis ${dS(s.d)} gemeldet · ~${money(s.vol)}<br>${names(s.m)}</div>
+    <div class="cwho"><b>${who(s)}</b>${s.o ? ` · <span class="neg">${s.o} Verkäufer</span>` : ""} · bis ${dS(s.d)} gemeldet · ~${money(s.vol)}<br>${names(s.m)}</div>
     <div class="plan">
       <div><span class="k">${st.pending ? "Kauf" : "Einstieg"}</span><b>${st.pending ? "nächster Schluss" : usd(s.ep)}</b></div>
       <div><span class="k">Stop −${CFG.stop} %</span><b class="neg">${usd(stop)}</b></div>
@@ -249,7 +250,7 @@ function pastTable() {
   const done = D.signals.filter(s => s.r != null);
   return `<div class="panel"><div class="panel-h"><h2>Alle vergangenen Dip-Cluster</h2><span class="sub">${done.length} abgeschlossen · Klick öffnet den Chart</span></div>
   <div class="tbl-wrap"><table><thead><tr><th>Gemeldet</th><th>Aktie</th><th>Käufer</th><th class="n">unter Hoch</th><th class="n">30 Tage</th><th class="n">S&amp;P</th><th class="n">vs S&amp;P</th></tr></thead>
-  <tbody>${done.slice(0, S.show).map(s => `<tr class="click" data-t="${esc(s.t)}"><td class="num">${dDE(s.d)}</td><td>${tickLink(s.t)}</td><td style="white-space:normal;min-width:180px">${s.n} · ${names(s.m, 3)}</td><td class="n">${nf0.format(s.fh)} %</td><td class="n">${pc(s.r)}</td><td class="n mut">${pct(s.s)}</td><td class="n">${pc(s.r - s.s)}</td></tr>`).join("")}</tbody></table></div>
+  <tbody>${done.slice(0, S.show).map(s => `<tr class="click" data-t="${esc(s.t)}"><td class="num">${dDE(s.d)}</td><td>${tickLink(s.t)}</td><td style="white-space:normal;min-width:180px">${s.n}${s.ins ? " + Insider" : ""}${s.big ? " · groß" : ""} · ${names(s.m, 3)}</td><td class="n">${nf0.format(s.fh)} %</td><td class="n">${pc(s.r)}</td><td class="n mut">${pct(s.s)}</td><td class="n">${pc(s.r - s.s)}</td></tr>`).join("")}</tbody></table></div>
   ${done.length > S.show ? `<div class="more"><button class="btn" data-more>Weitere ${Math.min(50, done.length - S.show)} anzeigen</button></div>` : ""}</div>`;
 }
 function drawEq(J) {
@@ -354,7 +355,7 @@ function detail(t) {
     <div><span class="k">Höchster Punkt</span><b class="pos">${pct(t.mfe)}</b></div>
     <div><span class="k">S&amp;P gleiche Zeit</span><b>${pct(t.sp)}</b></div>
     <div><span class="k">Unter 52W-Hoch</span><b>${nf0.format(s.fh)} %</b></div>
-  </div><p class="hint" style="margin:10px 0 0">${s.n} Käufer: ${names(s.m, 8)}${s.o ? ` · ${s.o} Verkäufer` : ""} · gemeldet ${dDE(s.d)}</p></div></div>`;
+  </div><p class="hint" style="margin:10px 0 0">${who(s)}: ${names(s.m, 8)}${s.o ? ` · ${s.o} Verkäufer` : ""} · gemeldet ${dDE(s.d)}</p></div></div>`;
 }
 function drawJournal(J) {
   const el = $("#jeq"), el2 = $("#jdd");
