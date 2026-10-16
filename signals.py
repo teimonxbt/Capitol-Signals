@@ -51,19 +51,31 @@ def _from_high(col, i):
     return round(float(col[i] / w.max() - 1) * 100, 1)
 
 
-def _curve(positions, cols, n, i0):
-    """Alle offenen Positionen gleich gewichtet, täglich; Cash (0 %) wenn nichts offen ist."""
-    s, c = np.zeros(n), np.zeros(n)
-    for t, i, x in positions:
+def _curve(positions, cols, spy, n, i0):
+    """Depot nach den Regeln: je Trade SIZE % des Depots, höchstens 5 gleichzeitig, Notfall-Stop auf
+    Schlusskurs-Basis, Verkauf nach HOLD Tagen. Das restliche Geld liegt im S&P 500 (SPY)."""
+    w = np.zeros(n)          # Summe der Gewichte offener Trades
+    rs = np.zeros(n)         # Summe gewichteter Tagesrenditen
+    cnt = np.zeros(n)
+    for t, i, x in sorted(positions, key=lambda p: p[1]):
         col = cols[t]
-        if i is None or x <= i:
+        if i is None or x <= i or not (col[i] > 0):
             continue
+        if cnt[i + 1] >= 5:
+            continue
+        for j in range(i + 1, x + 1):     # Notfall-Stop
+            if col[j] > 0 and col[j] / col[i] - 1 <= STOP / 100:
+                x = j
+                break
         seg = col[i:x + 1]
         d = seg[1:] / seg[:-1] - 1
         d = np.where(np.isfinite(d), np.clip(d, -0.5, 1.0), 0.0)
-        s[i + 1:x + 1] += d
-        c[i + 1:x + 1] += 1
-    daily = np.divide(s, c, out=np.zeros(n), where=c > 0)
+        rs[i + 1:x + 1] += SIZE / 100 * d
+        w[i + 1:x + 1] += SIZE / 100
+        cnt[i + 1:x + 1] += 1
+    sd = np.r_[0.0, spy[1:] / spy[:-1] - 1]
+    sd = np.where(np.isfinite(sd), sd, 0.0)
+    daily = rs + (1 - w) * sd
     eq = np.cumprod(1 + daily[i0:])
     v = [round(float(e), 4) for e in eq[::STEP]]
     if (len(eq) - 1) % STEP:
@@ -145,7 +157,7 @@ def build(members, rows, dates, px, bench="SPY"):
         return {"n": len(d), "beat": round(100 * sum(v > 0 for v in e) / len(e)), "ex": round(sum(e) / len(e), 2),
                 "med": round(e[len(e) // 2], 2)}
 
-    curve = _curve([(s["t"], s["i"], min(s["i"] + HOLD, last)) for s in sig if s["i"] is not None], cols, n, i0)
+    curve = _curve([(s["t"], s["i"], min(s["i"] + HOLD, last)) for s in sig if s["i"] is not None], cols, spy, n, i0)
     used_m = {m for s in sig for m in s["m"]}
     used_t = {s["t"] for s in sig}
     asset = {}
