@@ -22,7 +22,7 @@ jobs:
           key: prices-${{ github.run_id }}
           restore-keys: prices-
       - run: pip install -r requirements.txt lxml
-      - run: python research/edge.py
+      - run: python research/expand.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
