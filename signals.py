@@ -1,8 +1,9 @@
 """
 Capitol Signals – Dip-Cluster
 
-Signal: mindestens 2 verschiedene Politiker melden innerhalb von 30 Tagen einen Kauf derselben Aktie,
-es gibt mehr Käufer als Verkäufer, und die Aktie notiert 40 % oder mehr unter ihrem 52-Wochen-Hoch.
+Signal: mindestens 2 verschiedene Politiker kaufen innerhalb von 30 Tagen dieselbe Aktie, mehr Käufer als Verkäufer,
+und die Aktie notiert 40 % oder mehr unter ihrem 52-Wochen-Hoch. Ein einzelner Politiker reicht, wenn er mindestens
+100.000 $ kauft (research/expand.py: hält die Qualität der Basis; Firmen-Insider als zweiter Käufer dagegen nicht).
 Einstieg zum Schlusskurs des ersten Handelstags nach der auslösenden Meldung, Verkauf nach 30 Tagen
 (21 Handelstage). Pro Aktie höchstens ein Signal je 63 Handelstage. Dividenden-Reinvestitionen zählen nicht.
 
@@ -10,6 +11,7 @@ Warum nur das: In der Forschung (research/edge.py) war das der einzige Bereich, 
 Testzeiträumen (2020–23 und 2024–26) verlässlich den S&P 500 geschlagen hat. Alles andere (normale
 Cluster, Ausschuss-Käufe, Top-Politiker, Firmen-Insider, technische Filter) brachte keinen Vorteil.
 """
+import bisect
 import json
 import os
 import re
@@ -28,6 +30,7 @@ SIZE = 4           # Positionsgröße in % des Depots
 CURVE_START = "2020-01-01"
 STEP = 5
 NOISE = re.compile(r"reinvest|dividend", re.I)
+BIG = 100000       # ein Politiker reicht ab diesem Betrag (Untergrenze der Meldespanne)
 
 
 def _r(col, i, j):
@@ -91,7 +94,8 @@ def _bcurve(col, i0):
     return v
 
 
-def build(members, rows, dates, px, bench="SPY"):
+def build(members, rows, dates, px, bench="SPY", ins=None):
+    ins = ins or {}
     n = len(dates)
     last = n - 1
     cols = {c: px[c].values for c in px.columns}
@@ -114,24 +118,38 @@ def build(members, rows, dates, px, bench="SPY"):
     allc, sig = [], []
     for tk, arr in by.items():
         col = cols[tk]
-        last_sig = -10 ** 9
-        for r in arr:
-            if r["side"] != "P":
-                continue
-            cut = (date.fromisoformat(r["filed"]) - timedelta(days=WIN)).isoformat()
-            w = [u for u in arr if cut <= u["filed"] <= r["filed"]]
+        last_sig = last_all = -10 ** 9
+        evd = {(r["filed"], r["pi"]) for r in arr if r["side"] == "P"}
+        for f in ins.get(tk, []):
+            k = bisect.bisect_right(dates, f)
+            evd.add((f, k if k < n else None))
+        for d, i in sorted(evd, key=lambda e: (e[0], n if e[1] is None else e[1])):
+            cut = (date.fromisoformat(d) - timedelta(days=WIN)).isoformat()
+            w = [u for u in arr if cut <= u["filed"] <= d]
             b = {u["m"] for u in w if u["side"] == "P"}
             s = {u["m"] for u in w if u["side"] == "S"}
-            if len(b) < MIN_N or len(s) >= len(b):
+            if not b:
                 continue
-            i = r["pi"]
+            ni = 1 if any(cut <= f <= d for f in ins.get(tk, [])) else 0
+            big = max(((u["lo"] or 0) for u in w if u["side"] == "P"), default=0)
+            if not ((len(b) + ni >= MIN_N and len(s) < len(b) + ni) or (big >= BIG and len(s) < len(b))):
+                continue
             pos = i if i is not None else n
-            if pos - last_sig < COOLDOWN:
-                continue
-            last_sig = pos
             fh = _from_high(col, i if i is not None else last)
-            rec = {"t": tk, "d": r["filed"], "i": i, "n": len(b), "o": len(s), "m": sorted(b), "fh": fh,
+            dip_ok = fh is not None and fh <= DIP and pos - last_sig >= COOLDOWN
+            all_ok = pos - last_all >= COOLDOWN       # Vergleichsgruppe: alle Cluster ohne Dip-Filter
+            if not (dip_ok or all_ok):
+                continue
+            if all_ok:
+                last_all = pos
+            if dip_ok:
+                last_sig = pos
+            rec = {"t": tk, "d": d, "i": i, "n": len(b), "o": len(s), "m": sorted(b), "fh": fh,
                    "vol": round(sum(((u["lo"] or 0) + (u["hi"] or u["lo"] or 0)) / 2 for u in w if u["side"] == "P"))}
+            if ni:
+                rec["ins"] = 1
+            if big >= BIG and len(b) + ni < MIN_N:
+                rec["big"] = big
             if i is not None and i + HOLD <= last:
                 rec["r"] = _p(_r(col, i, i + HOLD))
                 rec["s"] = _p(_r(spy, i, i + HOLD))
@@ -144,8 +162,9 @@ def build(members, rows, dates, px, bench="SPY"):
                 rec["ep"] = round(float(col[i]), 2)
             if col[last] > 0:
                 rec["lp"] = round(float(col[last]), 2)
-            allc.append(rec)
-            if fh is not None and fh <= DIP:
+            if all_ok:
+                allc.append(rec)
+            if dip_ok:
                 if i is not None and col[i] > 0:
                     seg = col[i:min(i + HOLD, last) + 1]
                     rec["path"] = [round(float(v / col[i]), 4) if v > 0 else None for v in seg]
@@ -175,7 +194,7 @@ def build(members, rows, dates, px, bench="SPY"):
     return {
         "asof": dates[-1], "dates": dates, "curveDates": cd,
         "rules": {"hold": HOLD, "days": 30, "win": WIN, "min_n": MIN_N, "dip": DIP, "cooldown": COOLDOWN,
-                  "stop": STOP, "target": TARGET, "size": SIZE},
+                  "stop": STOP, "target": TARGET, "size": SIZE, "big": BIG},
         "signals": sig, "curve": curve,
         "bench": {"SPY": _bcurve(spy, i0), "QQQ": _bcurve(qqq, i0) if qqq is not None else None},
         "compare": {"dip": stats(sig), "alle": stats(allc), "ohne_dip": stats([x for x in allc if x not in sig])},
@@ -224,11 +243,12 @@ def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", sit
     if new:
         title = "Dip-Cluster: " + ", ".join(s["t"] for s in new[:6]) + (" …" if len(new) > 6 else "")
         L = [title, "", f"Kursstand {dates[-1]}. Regeln: am nächsten Handelstag zum Schlusskurs kaufen, "
-             f"{SIZE} % Positionsgröße, Notfall-Stop {STOP} %, optional Ziel +{TARGET} %, nach 30 Tagen verkaufen.", "",
+             f"Positionsgröße wie im Journal eingestellt, Notfall-Stop {STOP} %, nach 30 Tagen verkaufen.", "",
              "| Aktie | Käufer | unter 52W-Hoch | letzter Kurs | Stop | gemeldet |", "|---|---|---|---|---|---|"]
         for s in new:
             lp = s.get("lp")
-            L.append(f'| {s["t"]} | {s["n"]}: {", ".join(nm(i) for i in s["m"][:6])} | {s["fh"]:.0f} % | '
+            extra = f" (Kauf ab {s['big'] // 1000}k $)" if s.get("big") else ""
+            L.append(f'| {s["t"]} | {s["n"]}: {", ".join(nm(i) for i in s["m"][:6])}{extra} | {s["fh"]:.0f} % | '
                      f'{lp if lp else "–"} | {round(lp * (1 + STOP / 100), 2) if lp else "–"} | {s["d"]} |')
         L += ["", "Vor dem Kauf kurz prüfen: Warum ist die Aktie gefallen? Bei Betrugsverdacht, Insolvenzgefahr oder Delisting nicht kaufen."]
         if site_url:
