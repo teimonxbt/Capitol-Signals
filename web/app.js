@@ -6,8 +6,16 @@
 let D, META, LAST, DATES, RU;
 const PX = new Map(), PXB = new Map(), TR = new Map();
 let charts = [];
-const S = { show: 25, depot: null };
-try { S.depot = Number(localStorage.getItem("cs-depot")) || null; } catch (e) {}
+const S = { show: 25, jf: "alle", jshow: 60, sel: null };
+let CAL = null, SIM = null, SIMKEY = "";
+// Einstellungen (Journal + Positionsgröße), gespeichert im Browser
+const CFG = { cap: 10000, risk: 2.5, stop: 25, max: 8 };
+try {
+  const c = JSON.parse(localStorage.getItem("cs-cfg") || "null");
+  if (c) Object.assign(CFG, c); else { const d = Number(localStorage.getItem("cs-depot")); if (d > 0) CFG.cap = d; }
+} catch (e) {}
+const saveCfg = () => { try { localStorage.setItem("cs-cfg", JSON.stringify(CFG)); } catch (e) {} };
+const posPct = () => Math.min(100, CFG.risk / CFG.stop * 100);
 
 // ------------------------------------------------------------------ helpers
 const nf0 = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
@@ -48,8 +56,9 @@ function status(s) {
 // ------------------------------------------------------------------ data
 async function j(url) { const r = await fetch(url); if (!r.ok) throw new Error(url + " → HTTP " + r.status); return r.json(); }
 async function load() {
-  const [dash, meta] = await Promise.all([j("data/dash.json"), j("data/meta.json")]);
+  const [dash, meta, cal] = await Promise.all([j("data/dash.json"), j("data/meta.json"), j("data/calendar.json").catch(() => null)]);
   D = dash; META = meta; DATES = D.dates; LAST = DATES.length - 1; RU = D.rules;
+  CAL = cal && cal.spy && cal.dates.length === DATES.length ? cal.spy : null;
   $("#stand").textContent = `Kurse bis ${dDE(D.asof)} · täglich aktualisiert`;
 }
 const bucket = t => /^[A-Z]/.test(t) ? t[0] : "0";
@@ -76,19 +85,6 @@ function stats(list) {
     years: Object.keys(years).sort().reverse().map(y => { const a = years[y], e = a.map(s => s.r - s.s); return { y, n: a.length, ex: mean(e), beat: 100 * e.filter(v => v > 0).length / a.length }; }),
   };
 }
-function curvePts() {
-  const cd = D.curveDates, v = D.curve, pts = [];
-  for (let i = 0; i < v.length && i < cd.length; i++) pts.push({ time: cd[i], s: v[i], spy: D.bench.SPY[i], qqq: D.bench.QQQ ? D.bench.QQQ[i] : null });
-  return pts;
-}
-function cstats(pts, key) {
-  if (pts.length < 2) return {};
-  const yrs = (Date.parse(pts[pts.length - 1].time) - Date.parse(pts[0].time)) / 864e5 / 365.25;
-  let peak = 0, mdd = 0;
-  for (const p of pts) { const v = p[key]; if (v == null) continue; peak = Math.max(peak, v); mdd = Math.min(mdd, v / peak - 1); }
-  const end = pts[pts.length - 1][key];
-  return { cagr: end == null ? null : 100 * (Math.pow(end, 1 / yrs) - 1), mdd: 100 * mdd };
-}
 function chartOpts(pf) {
   return { autoSize: true,
     layout: { background: { type: "solid", color: tok("--surface") }, textColor: tok("--muted"), fontFamily: "IBM Plex Mono, ui-monospace, monospace", fontSize: 11 },
@@ -97,17 +93,95 @@ function chartOpts(pf) {
     localization: { locale: "de-DE", ...(pf ? { priceFormatter: pf } : {}) } };
 }
 
+// ------------------------------------------------------------------ Journal-Simulation
+// Tägliche Bewertung: Konto startet 2020 mit CFG.cap in Cash. Jedes Dip-Cluster bekommt Risiko ÷ Stop
+// vom aktuellen Kontowert (wenn genug Cash da ist und weniger als CFG.max Trades offen sind).
+// Verkauf beim ersten Schlusskurs unter dem Stop oder nach 21 Handelstagen. Rest bleibt Cash (0 % Zins).
+function sim() {
+  const key = JSON.stringify(CFG) + D.asof;
+  if (SIM && SIMKEY === key) return SIM;
+  const i0 = Math.max(0, DATES.findIndex(d => d >= "2020-01-01"));
+  const sl = 1 - CFG.stop / 100, pp = posPct() / 100, H = RU.hold;
+  const T = D.signals.filter(s => s.i != null && s.i >= i0 && s.path && s.path.length).map(s => {
+    const p = []; let lv = 1;
+    for (const v of s.path) { if (v != null) lv = v; p.push(lv); }
+    let x = p.length - 1, why = p.length - 1 >= H ? "30 Tage" : "offen";
+    for (let k = 1; k < p.length; k++) if (p[k] <= sl) { x = k; why = "Stop"; break; }
+    return { s, t: s.t, p, x, why, ei: s.i, xi: s.i + x, size: 0, skip: null };
+  }).sort((a, b) => a.ei - b.ei || b.s.n - a.s.n);
+  const byEntry = new Map();
+  for (const t of T) { if (!byEntry.has(t.ei)) byEntry.set(t.ei, []); byEntry.get(t.ei).push(t); }
+  let cash = CFG.cap; const open = new Set(), eq = [], nOpen = [];
+  for (let k = i0; k <= LAST; k++) {
+    for (const t of [...open]) if (t.why !== "offen" && t.xi === k) { cash += t.size * t.p[t.x]; open.delete(t); }
+    let e = cash; for (const t of open) e += t.size * t.p[k - t.ei];
+    for (const t of byEntry.get(k) || []) {
+      if (open.size >= CFG.max) { t.skip = `schon ${CFG.max} offen`; continue; }
+      const want = e * pp, size = Math.min(want, cash);
+      if (size < want * 0.5) { t.skip = "kein Cash frei"; continue; }
+      t.size = size; cash -= size; open.add(t);
+    }
+    e = cash; for (const t of open) e += t.size * t.p[k - t.ei];
+    eq.push(e); nOpen.push(open.size);
+  }
+  // Drawdown
+  let peak = -Infinity, pk = i0, mdd = 0, mddK = i0, mddPk = i0;
+  const dd = eq.map((v, n) => { if (v > peak) { peak = v; pk = i0 + n; } const d = v / peak - 1; if (d < mdd) { mdd = d; mddK = i0 + n; mddPk = pk; } return d; });
+  const E = k => eq[k - i0], SP = k => CAL ? CAL[k] : null;
+  for (const t of T) {
+    if (t.skip) continue;
+    const seg = t.p.slice(0, t.x + 1);
+    t.ret = (t.p[t.x] - 1) * 100; t.pnl = t.size * (t.p[t.x] - 1); t.R = t.ret / CFG.stop;
+    t.mae = (Math.min(...seg) - 1) * 100; t.mfe = (Math.max(...seg) - 1) * 100; t.maeUsd = t.size * t.mae / 100;
+    t.maeK = t.ei + seg.indexOf(Math.min(...seg));
+    t.sp = SP(t.ei) > 0 && SP(t.xi) > 0 ? (SP(t.xi) / SP(t.ei) - 1) * 100 : null;
+    t.bal = t.why === "offen" ? null : E(t.xi);
+    t.pos = t.size / E(t.ei) * 100;
+    let w = 0; for (let k = t.ei; k <= t.xi; k++) w = Math.min(w, dd[k - i0]); t.acctDD = w * 100;
+  }
+  const taken = T.filter(t => !t.skip), done = taken.filter(t => t.why !== "offen");
+  const wins = done.filter(t => t.pnl > 0), loss = done.filter(t => t.pnl <= 0);
+  const sum = a => a.reduce((x, y) => x + y, 0), mean = a => a.length ? sum(a) / a.length : null;
+  let streak = 0, ls = 0;
+  for (const t of [...done].sort((a, b) => a.xi - b.xi)) { if (t.pnl <= 0) { streak++; ls = Math.max(ls, streak); } else streak = 0; }
+  const yrs = (Date.parse(DATES[LAST]) - Date.parse(DATES[i0])) / 864e5 / 365.25;
+  const end = eq[eq.length - 1];
+  let spMdd = 0; if (CAL) { let p = 0; for (let k = i0; k <= LAST; k++) { if (!(CAL[k] > 0)) continue; p = Math.max(p, CAL[k]); spMdd = Math.min(spMdd, CAL[k] / p - 1); } }
+  const years = [];
+  for (let k = i0, y0 = k; k <= LAST + 1; k++) {
+    if (k <= LAST && DATES[k].slice(0, 4) === DATES[y0].slice(0, 4)) continue;
+    const a = y0 === i0 ? i0 : y0 - 1, b = k - 1, y = DATES[y0].slice(0, 4);
+    let p = -Infinity, m = 0; for (let n = a; n <= b; n++) { p = Math.max(p, E(n)); m = Math.min(m, E(n) / p - 1); }
+    const yd = done.filter(t => DATES[t.xi].slice(0, 4) === y);
+    years.push({ y, ret: (E(b) / E(a) - 1) * 100, sp: SP(a) > 0 && SP(b) > 0 ? (SP(b) / SP(a) - 1) * 100 : null, n: yd.length,
+      win: yd.length ? 100 * yd.filter(t => t.pnl > 0).length / yd.length : null, pnl: sum(yd.map(t => t.pnl)), mdd: m * 100, endv: E(b) });
+    y0 = k;
+  }
+  const byRet = [...done].sort((a, b) => b.ret - a.ret);
+  SIM = { i0, T, taken, done, eq, dd, nOpen, end, mdd: mdd * 100, mddK, mddPk,
+    cagr: (Math.pow(end / CFG.cap, 1 / yrs) - 1) * 100, tot: (end / CFG.cap - 1) * 100,
+    spCagr: CAL && CAL[i0] > 0 ? (Math.pow(CAL[LAST] / CAL[i0], 1 / yrs) - 1) * 100 : null, spMdd: spMdd * 100,
+    win: done.length ? 100 * wins.length / done.length : null,
+    beat: done.length ? 100 * done.filter(t => t.sp != null && t.ret > t.sp).length / done.length : null,
+    avgW: mean(wins.map(t => t.ret)), avgL: mean(loss.map(t => t.ret)),
+    pf: sum(loss.map(t => -t.pnl)) > 0 ? sum(wins.map(t => t.pnl)) / sum(loss.map(t => -t.pnl)) : null,
+    expR: mean(done.map(t => t.R)), ls, stops: done.filter(t => t.why === "Stop").length,
+    best: byRet[0], worst: byRet[byRet.length - 1], skipped: T.length - taken.length, perYear: done.length / yrs,
+    years: years.reverse() };
+  SIMKEY = key;
+  return SIM;
+}
+
 // ================================================================== Hauptseite
 function viewMain(app) {
   const open = D.signals.filter(s => status(s).open);
   const st = stats(D.signals);
-  const pts = curvePts();
-  const a = cstats(pts, "s"), sp = cstats(pts, "spy");
+  const J = sim();
   const cmp = D.compare;
   app.innerHTML = `
   <div class="view-head"><div><div class="eyebrow">Strategie</div><h1>Dip-Cluster</h1>
     <p>Mindestens ${RU.min_n} Politiker kaufen innerhalb von ${RU.win} Tagen dieselbe Aktie, die ${-RU.dip} % oder mehr unter ihrem 52-Wochen-Hoch steht. Kaufen zum Schlusskurs nach der Meldung, nach ${RU.days} Tagen verkaufen.</p></div>
-    <label class="ctl"><span>Dein Depot (für Positionsgröße)</span><input type="number" id="depot" min="0" step="1000" placeholder="z. B. 50000" value="${S.depot || ""}" style="width:160px"></label></div>
+    <label class="ctl"><span>Dein Konto (für Positionsgröße)</span><input type="number" id="depot" min="0" step="1000" placeholder="z. B. 10000" value="${CFG.cap || ""}" style="width:160px"></label></div>
 
   <h3 class="sec">Jetzt offen <small>${open.length ? `${open.length} Signal${open.length === 1 ? "" : "e"}` : ""}</small></h3>
   ${open.length ? `<div class="cards">${open.map(card).join("")}</div>` : `<div class="panel empty">Gerade kein offenes Dip-Cluster. Neue Signale kommen per E-Mail (GitHub-Benachrichtigung).</div>`}
@@ -116,8 +190,8 @@ function viewMain(app) {
     <ol class="rules">
       <li><b>Signal kommt</b> per E-Mail oder steht oben bei „Jetzt offen“.</li>
       <li><b>Kurz prüfen (5 Min.):</b> Warum ist die Aktie gefallen? Bei Betrugsverdacht, Insolvenzgefahr oder Delisting nicht kaufen. Kurs über 5 $, Börsenwert über ca. 2 Mrd. $. Ist sie seit dem Signal schon über 10–15 % gestiegen, auslassen.</li>
-      <li><b>Kaufen</b> am nächsten Handelstag zum Schlusskurs, <b>${RU.size} % des Depots</b> je Trade, höchstens 5 Trades gleichzeitig und höchstens 2 aus derselben Branche.</li>
-      <li><b>Notfall-Stop ${RU.stop} %</b> auf Schlusskurs-Basis, kein enger Stop. Optional Gewinn bei <b>+${RU.target} %</b> mitnehmen.</li>
+      <li><b>Kaufen</b> am nächsten Handelstag zum Schlusskurs, <b>${nf1.format(posPct())} % des Kontos</b> je Trade (= ${nf1.format(CFG.risk)} % Risiko bei ${CFG.stop} % Stop), höchstens ${CFG.max} Trades gleichzeitig und höchstens 2 aus derselben Branche. <a href="#journal">Ändern im Journal</a></li>
+      <li><b>Notfall-Stop −${CFG.stop} %</b> auf Schlusskurs-Basis, kein enger Stop.</li>
       <li><b>Nach ${RU.days} Tagen verkaufen</b>, egal wie der Trade steht.</li>
       <li><b>Jeden Trade notieren.</b> Nach 20–30 Trades prüfen: Schlagen weniger als die Hälfte den S&amp;P, aufhören.</li>
     </ol></div>
@@ -127,29 +201,29 @@ function viewMain(app) {
   <div class="tiles">
     <div class="tile"><div class="k">Schlägt den S&amp;P</div><div class="v">${q(st.beat)}</div><div class="d">im Plus: ${q(st.hit)}</div></div>
     <div class="tile"><div class="k">Ø pro Trade vs S&amp;P</div><div class="v ${cls(st.ex)}">${pct(st.ex)}</div><div class="d">Median ${pct(st.med)} · Ø Rendite ${pct(st.r)}</div></div>
-    <div class="tile"><div class="k">Depot pro Jahr</div><div class="v ${cls(a.cagr - sp.cagr)}">${pct(a.cagr)}</div><div class="d">nur S&amp;P: ${pct(sp.cagr)} · Plus ${pct(a.cagr - sp.cagr)} p.a.</div></div>
-    <div class="tile"><div class="k">Max. Rückgang Depot</div><div class="v neg">${pct(a.mdd)}</div><div class="d">nur S&amp;P: ${pct(sp.mdd)}</div></div>
+    <div class="tile"><div class="k">Konto pro Jahr</div><div class="v ${cls(J.cagr)}">${pct(J.cagr)}</div><div class="d">S&amp;P 500 gehalten: ${pct(J.spCagr)}</div></div>
+    <div class="tile"><div class="k">Max. Rückgang Konto</div><div class="v neg">${pct(J.mdd)}</div><div class="d">S&amp;P 500 gehalten: ${pct(J.spMdd)}</div></div>
     <div class="tile"><div class="k">Signale</div><div class="v">${nf0.format(st.n)}</div><div class="d">≈ ${nf0.format(st.n / Math.max(1, (Date.parse(D.asof) - Date.parse("2020-01-01")) / 3.156e10))} pro Jahr</div></div>
   </div>
-  <div class="panel"><div class="panel-h"><h2>Depot nach den Regeln</h2><div class="legend-row"><span><span class="sw" style="background:var(--accent)"></span>S&amp;P + Dip-Cluster</span><span><span class="sw" style="background:var(--chart-spy)"></span>S&amp;P 500</span><span><span class="sw dash" style="border-color:var(--ink-2)"></span>Nasdaq 100</span></div></div>
-    <div class="panel-b"><div class="chart sm" id="eq"></div><p class="hint" style="margin:8px 0 0">Simulation: Das Depot liegt im S&amp;P 500, jedes Dip-Cluster bekommt ${RU.size} % des Depots (höchstens 5 gleichzeitig), mit Notfall-Stop ${RU.stop} % und Verkauf nach ${RU.days} Tagen. Ohne Gebühren und Steuern. Der Abstand zur S&amp;P-Linie ist der Mehrwert der Strategie.</p></div></div>
+  <div class="panel"><div class="panel-h"><h2>Konto nach den Regeln</h2><div class="legend-row"><span><span class="sw" style="background:var(--accent)"></span>Dip-Cluster</span><span><span class="sw" style="background:var(--chart-spy)"></span>S&amp;P 500 gehalten</span><a class="btn primary" href="#journal">Journal öffnen →</a></div></div>
+    <div class="panel-b"><div class="chart sm" id="eq"></div><p class="hint" style="margin:8px 0 0">Simulation ab 2020 mit ${money(CFG.cap)}: nur die Dip-Cluster-Trades, ${nf1.format(posPct())} % des Kontos je Trade, höchstens ${CFG.max} gleichzeitig, Stop −${CFG.stop} %, Verkauf nach ${RU.days} Tagen. Zwischen den Trades liegt das Geld als Cash. Ohne Gebühren und Steuern. Jeden einzelnen Trade siehst du im Journal.</p></div></div>
   <div class="grid2">
     <div class="panel"><div class="panel-h"><h2>Nach Jahr</h2></div><div class="tbl-wrap"><table><thead><tr><th>Jahr</th><th class="n">Signale</th><th class="n">schlägt S&amp;P</th><th class="n">Ø vs S&amp;P</th></tr></thead><tbody>${st.years.map(y => `<tr><td class="num">${y.y}</td><td class="n">${y.n}</td><td class="n">${q(y.beat)}</td><td class="n">${pc(y.ex)}</td></tr>`).join("")}</tbody></table></div></div>
     <div class="note"><b>Ehrlich:</b> Nur rund 15 Signale pro Jahr. Ein großer Teil der Gewinne kam nach Markt-Crashs (2020, April 2025). In ruhigen Märkten gibt es weniger und schwächere Signale. Getestet wurden auch normale Cluster, Ausschuss-Käufe, Top-Politiker, Firmen-Insider, technische Filter sowie Haltedauern von 60 und 90 Tagen: Nichts davon schlug den S&amp;P verlässlich, deshalb ist es nicht mehr auf der Seite. Keine Anlageberatung.</div>
   </div>
   ${pastTable()}`;
   const dep = $("#depot");
-  dep.addEventListener("change", () => { S.depot = Number(dep.value) || null; try { localStorage.setItem("cs-depot", S.depot || ""); } catch (e) {} const y = scrollY; route(); scrollTo(0, y); });
+  dep.addEventListener("change", () => { const v = Number(dep.value); if (v > 0) { CFG.cap = v; saveCfg(); } const y = scrollY; route(); scrollTo(0, y); });
   app.querySelectorAll("tr[data-t]").forEach(tr => tr.addEventListener("click", e => { if (!e.target.closest("a")) location.hash = "t." + encodeURIComponent(tr.dataset.t); }));
   app.querySelector("[data-more]")?.addEventListener("click", () => { S.show += 50; const y = scrollY; route(); scrollTo(0, y); });
-  drawEq(pts);
+  drawEq(J);
 }
 function card(s) {
   const st = status(s), t = D.tickers[s.t] || {};
   const ex = s.rn != null && s.sn != null ? s.rn - s.sn : null;
   const ref = s.ep || s.lp;
-  const stop = ref ? ref * (1 + RU.stop / 100) : null, tgt = ref ? ref * (1 + RU.target / 100) : null;
-  const pos = S.depot ? S.depot * RU.size / 100 : null;
+  const stop = ref ? ref * (1 - CFG.stop / 100) : null, tgt = ref ? ref * (1 + RU.target / 100) : null;
+  const pos = CFG.cap ? CFG.cap * posPct() / 100 : null;
   const sh = pos && s.lp ? Math.floor(pos / s.lp) : null;
   const run = s.ep && s.lp ? (s.lp / s.ep - 1) * 100 : null;
   return `<a class="card" href="#t.${encodeURIComponent(s.t)}">
@@ -158,11 +232,11 @@ function card(s) {
     <div class="cwho"><b>${s.n} Käufer</b>${s.o ? ` · <span class="neg">${s.o} Verkäufer</span>` : ""} · bis ${dS(s.d)} gemeldet · ~${money(s.vol)}<br>${names(s.m)}</div>
     <div class="plan">
       <div><span class="k">${st.pending ? "Kauf" : "Einstieg"}</span><b>${st.pending ? "nächster Schluss" : usd(s.ep)}</b></div>
-      <div><span class="k">Stop ${RU.stop} %</span><b class="neg">${usd(stop)}</b></div>
-      <div><span class="k">Ziel +${RU.target} %</span><b class="pos">${usd(tgt)}</b></div>
+      <div><span class="k">Stop −${CFG.stop} %</span><b class="neg">${usd(stop)}</b></div>
+      <div><span class="k">Risiko</span><b class="neg">${pos ? "$" + nf0.format(pos * CFG.stop / 100) : "–"}</b></div>
       <div><span class="k">Verkauf ${st.exit > DATES[LAST] ? "ca." : ""}</span><b>${dS(st.exit)}</b></div>
     </div>
-    ${pos ? `<div class="hint">Position: ${RU.size} % = <b>$${nf0.format(pos)}</b>${sh ? ` ≈ ${nf0.format(sh)} Aktien zu ${usd(s.lp)}` : ""}</div>` : ""}
+    ${pos ? `<div class="hint">Position: ${nf1.format(posPct())} % = <b>$${nf0.format(pos)}</b>${sh ? ` ≈ ${nf0.format(sh)} Aktien zu ${usd(s.lp)}` : ""}</div>` : ""}
     <div class="cnums">
       <div><span class="k">seit Einstieg</span><b class="${cls(s.rn)}">${st.pending ? "–" : pct(s.rn)}</b></div>
       <div><span class="k">vs S&amp;P</span><b class="${cls(ex)}">${st.pending ? "–" : pct(ex)}</b></div>
@@ -178,15 +252,153 @@ function pastTable() {
   <tbody>${done.slice(0, S.show).map(s => `<tr class="click" data-t="${esc(s.t)}"><td class="num">${dDE(s.d)}</td><td>${tickLink(s.t)}</td><td style="white-space:normal;min-width:180px">${s.n} · ${names(s.m, 3)}</td><td class="n">${nf0.format(s.fh)} %</td><td class="n">${pc(s.r)}</td><td class="n mut">${pct(s.s)}</td><td class="n">${pc(s.r - s.s)}</td></tr>`).join("")}</tbody></table></div>
   ${done.length > S.show ? `<div class="more"><button class="btn" data-more>Weitere ${Math.min(50, done.length - S.show)} anzeigen</button></div>` : ""}</div>`;
 }
-function drawEq(pts) {
+function drawEq(J) {
   const el = $("#eq"); if (!el) return;
-  if (!window.LightweightCharts || pts.length < 2) { el.innerHTML = `<div class="empty">Chart nicht verfügbar.</div>`; return; }
-  const c = LightweightCharts.createChart(el, { ...chartOpts(v => (v > 0 ? "+" : "") + nf0.format(v) + " %"), handleScroll: false, handleScale: false }); charts.push(c);
-  const add = (key, color, style, title) => { const s = c.addLineSeries({ color, lineWidth: 2, lineStyle: style, priceLineVisible: false, lastValueVisible: true, title }); s.setData(pts.filter(p => p[key] != null).map(p => ({ time: p.time, value: (p[key] - 1) * 100 }))); };
-  add("spy", tok("--chart-spy"), 0, "S&P");
-  if (pts[0].qqq != null) add("qqq", tok("--ink-2"), 2, "Nasdaq");
-  add("s", tok("--accent"), 0, "S&P + Dip");
+  if (!window.LightweightCharts || J.eq.length < 2) { el.innerHTML = `<div class="empty">Chart nicht verfügbar.</div>`; return; }
+  const c = LightweightCharts.createChart(el, { ...chartOpts(v => (v > 0 ? "+" : "") + nf0.format(v) + " %"), handleScroll: false, handleScale: false, timeScale: { borderColor: tok("--line"), minBarSpacing: 0.01 } }); charts.push(c);
+  const step = 3, pt = (k, v) => ({ time: DATES[k], value: v });
+  if (CAL) { const s = c.addLineSeries({ color: tok("--chart-spy"), lineWidth: 2, priceLineVisible: false, title: "S&P" }); const b = CAL[J.i0]; s.setData(J.eq.map((_, n) => J.i0 + n).filter((k, n) => (n % step === 0 || k === LAST) && CAL[k] > 0).map(k => pt(k, (CAL[k] / b - 1) * 100))); }
+  const s = c.addLineSeries({ color: tok("--accent"), lineWidth: 2, priceLineVisible: false, title: "Dip" });
+  s.setData(J.eq.map((v, n) => [J.i0 + n, v]).filter(([k], n) => n % step === 0 || k === LAST).map(([k, v]) => pt(k, (v / CFG.cap - 1) * 100)));
   c.timeScale().fitContent();
+}
+
+// ================================================================== Journal
+const WHY = { "Stop": "neg", "30 Tage": "", "offen": "new" };
+function viewJournal(app) {
+  const J = sim();
+  const f = S.jf, list = [...J.T].reverse().filter(t =>
+    f === "alle" ? true : f === "gewinner" ? !t.skip && t.why !== "offen" && t.pnl > 0 : f === "verlierer" ? !t.skip && t.why !== "offen" && t.pnl <= 0 :
+    f === "stop" ? !t.skip && t.why === "Stop" : f === "offen" ? !t.skip && t.why === "offen" : !!t.skip);
+  const num = new Map(J.taken.map((t, n) => [t, n + 1]));
+  const tile = (k, v, d, c = "") => `<div class="tile"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="d">${d}</div></div>`;
+  const pend = D.signals.filter(s => s.i == null);
+  app.innerHTML = `
+  <div class="view-head"><div><div class="eyebrow">Backtest-Journal</div><h1>Jeder Trade seit 2020</h1>
+    <p>So wäre dein Konto gelaufen, wenn du jedes Dip-Cluster nach den Regeln gekauft hättest. Klick auf einen Trade zeigt ihn im Chart.</p></div></div>
+
+  <div class="panel jset"><div class="panel-b">
+    <label class="ctl"><span>Startkapital 2020 ($)</span><input type="number" data-k="cap" min="100" step="1000" value="${CFG.cap}"></label>
+    <label class="ctl"><span>Risiko pro Trade (%)</span><input type="number" data-k="risk" min="0.1" max="25" step="0.5" value="${CFG.risk}"></label>
+    <label class="ctl"><span>Stop (% unter Einstieg)</span><input type="number" data-k="stop" min="5" max="60" step="5" value="${CFG.stop}"></label>
+    <label class="ctl"><span>Max. gleichzeitig</span><input type="number" data-k="max" min="1" max="30" step="1" value="${CFG.max}"></label>
+    <div class="jpos"><span>Positionsgröße</span><b>${nf1.format(posPct())} %</b><small>= Risiko ÷ Stop · heute ${money(CFG.cap * posPct() / 100)}</small></div>
+    <button class="btn ghost" id="jreset" type="button">Standard</button>
+  </div></div>
+
+  <div class="tiles">
+    ${tile("Endkapital", money(J.end), `${pct(J.tot)} seit ${DATES[J.i0].slice(0, 4)}`, cls(J.tot))}
+    ${tile("Rendite pro Jahr", pct(J.cagr), `S&amp;P 500 gehalten: ${pct(J.spCagr)}`, cls(J.cagr))}
+    ${tile("Max. Rückgang", pct(J.mdd), `am ${dDE(DATES[J.mddK])} · S&amp;P: ${pct(J.spMdd)}`, "neg")}
+    ${tile("Trades", nf0.format(J.done.length), `≈ ${nf0.format(J.perYear)} pro Jahr · ${J.skipped} ausgelassen`)}
+    ${tile("Trefferquote", q(J.win), `schlägt den S&amp;P: ${q(J.beat)}`)}
+    ${tile("Ø Gewinner / Verlierer", `<span class="pos">${pct(J.avgW)}</span> <span class="neg">${pct(J.avgL)}</span>`, `RR ${J.avgL ? "1 : " + nf2.format(J.avgW / -J.avgL) : "–"}`)}
+    ${tile("Profit-Faktor", J.pf == null ? "–" : nf2.format(J.pf), `Ø ${J.expR == null ? "–" : (J.expR > 0 ? "+" : "") + nf2.format(J.expR)} R pro Trade`)}
+    ${tile("Stops / Verlustserie", `${J.stops} / ${J.ls}`, `längste Serie: ${J.ls} Verlierer in Folge`)}
+    ${tile("Bester / schlechtester", `<span class="pos">${J.best ? esc(J.best.t) + " " + pct(J.best.ret) : "–"}</span>`, `<span class="neg">${J.worst ? esc(J.worst.t) + " " + pct(J.worst.ret) : "–"}</span>`)}
+  </div>
+
+  <div class="panel" id="jchart"><div class="panel-h"><h2>Kontoverlauf</h2><div class="legend-row"><span><span class="sw" style="background:var(--accent)"></span>Konto</span>${CAL ? `<span><span class="sw" style="background:var(--chart-spy)"></span>Gleicher Betrag im S&amp;P 500</span>` : ""}<span><span class="sw dot" style="background:var(--pos)"></span>Gewinn-Trade</span><span><span class="sw dot" style="background:var(--neg)"></span>Verlust-Trade</span><button class="btn" id="jall" type="button">Alles zeigen</button></div></div>
+    <div class="panel-b"><div class="chart" id="jeq"><div class="chart-legend" id="jleg"></div></div><div class="chart dd" id="jdd"></div>
+    <p class="hint" style="margin:8px 0 0">Oben das Konto in $, unten der Rückgang vom letzten Höchststand. Punkte = Verkauf eines Trades (grün Gewinn, rot Verlust). Ohne Gebühren, Steuern und Zinsen auf Cash.</p></div></div>
+  <div id="jdet"></div>
+
+  <div class="panel"><div class="panel-h"><h2>Trades</h2><div class="chips" id="jf">${[["alle", "Alle"], ["gewinner", "Gewinner"], ["verlierer", "Verlierer"], ["stop", "Stops"], ["offen", "Offen"], ["skip", "Ausgelassen"]].map(([k, l]) => `<button type="button" class="chip${f === k ? " on" : ""}" data-f="${k}">${l}</button>`).join("")}</div></div>
+  <div class="tbl-wrap"><table class="jt"><thead><tr><th class="n">#</th><th>Aktie</th><th>Kauf</th><th>Verkauf</th><th>Grund</th><th class="n">Position</th><th class="n">Ergebnis</th><th class="n">Gewinn $</th><th class="n">R</th><th class="n" title="Tiefster Stand während des Trades">Max. im Minus</th><th class="n" title="Höchster Stand während des Trades">Max. im Plus</th><th class="n">S&amp;P</th><th class="n" title="Größter Rückgang des ganzen Kontos während der Trade lief">Konto-DD</th><th class="n">Konto danach</th></tr></thead>
+  <tbody>${pend.map(s => `<tr class="mut"><td class="n">–</td><td>${tickLink(s.t)}</td><td class="num">nächster Schluss</td><td class="num">–</td><td><span class="badge new">wartet</span></td><td class="n" colspan="9" style="text-align:left">Gemeldet am ${dDE(s.d)}, Kauf zum nächsten Schlusskurs</td></tr>`).join("")}
+  ${list.slice(0, S.jshow).map(t => t.skip
+    ? `<tr class="mut"><td class="n">–</td><td>${tickLink(t.t)}</td><td class="num">${dDE(DATES[t.ei])}</td><td class="num">–</td><td>ausgelassen</td><td class="n" colspan="9" style="text-align:left">${esc(t.skip)} · hätte ${pct((t.p[t.x] - 1) * 100)} gebracht</td></tr>`
+    : `<tr class="click${S.sel === t.ei + t.t ? " sel" : ""}" data-j="${esc(t.ei + t.t)}"><td class="n mut">${num.get(t)}</td><td>${tickLink(t.t)}</td>
+      <td class="num">${dDE(DATES[t.ei])}<br><span class="mut">${usd(t.s.ep)}</span></td>
+      <td class="num">${t.why === "offen" ? "läuft" : dDE(DATES[t.xi])}<br><span class="mut">${t.s.ep ? usd(t.s.ep * t.p[t.x]) : ""}</span></td>
+      <td><span class="badge ${WHY[t.why]}">${t.why === "offen" ? `offen · noch ${RU.hold - t.x} HT` : t.why}</span></td>
+      <td class="n">$${nf0.format(t.size)}<br><span class="mut">${nf1.format(t.pos)} %</span></td>
+      <td class="n"><b class="${cls(t.ret)}">${pct(t.ret)}</b></td><td class="n ${cls(t.pnl)}">${t.pnl >= 0 ? "+" : "−"}$${nf0.format(Math.abs(t.pnl))}</td>
+      <td class="n ${cls(t.R)}">${(t.R > 0 ? "+" : "") + nf2.format(t.R)}</td>
+      <td class="n neg">${pct(t.mae)}<br><span class="mut">−$${nf0.format(Math.abs(t.maeUsd))}</span></td><td class="n pos">${pct(t.mfe)}</td>
+      <td class="n mut">${pct(t.sp)}</td><td class="n ${t.acctDD < -0.05 ? "neg" : "mut"}">${pct(t.acctDD)}</td><td class="n">${t.bal == null ? "–" : money(t.bal)}</td></tr>`).join("")}</tbody></table></div>
+  ${list.length > S.jshow ? `<div class="more"><button class="btn" data-jmore>Weitere ${Math.min(100, list.length - S.jshow)} anzeigen</button></div>` : ""}</div>
+
+  <div class="grid2">
+    <div class="panel"><div class="panel-h"><h2>Nach Jahr</h2></div><div class="tbl-wrap"><table><thead><tr><th>Jahr</th><th class="n">Konto</th><th class="n">S&amp;P</th><th class="n">Max. Rückgang</th><th class="n">Trades</th><th class="n">Treffer</th><th class="n">Kontostand</th></tr></thead>
+    <tbody>${J.years.map(y => `<tr><td class="num">${y.y}</td><td class="n"><b class="${cls(y.ret)}">${pct(y.ret)}</b></td><td class="n mut">${pct(y.sp)}</td><td class="n neg">${pct(y.mdd)}</td><td class="n">${y.n}</td><td class="n">${q(y.win)}</td><td class="n">${money(y.endv)}</td></tr>`).join("")}</tbody></table></div></div>
+    <div class="note"><b>So liest du das:</b> <b>R</b> = Ergebnis geteilt durch das Risiko (−1 R = Stop getroffen). <b>Max. im Minus</b> = tiefster Schlusskurs während des Trades, also wie weh er zwischendurch tat. <b>Konto-DD</b> = wie weit das ganze Konto unter seinem Höchststand lag, während der Trade lief. <b>Ausgelassen</b> = Signal kam, als schon ${CFG.max} Trades offen waren oder kein Cash frei war.<br><br>Kurse sind Schlusskurse, der Stop greift auf Schlusskurs-Basis (im echten Handel kann ein Kurs auch darunter öffnen). Keine Anlageberatung.</div>
+  </div>`;
+
+  app.querySelectorAll(".jset input").forEach(inp => inp.addEventListener("change", () => {
+    const v = Number(inp.value); if (!(v > 0)) return;
+    CFG[inp.dataset.k] = inp.dataset.k === "max" ? Math.round(v) : v; saveCfg(); const y = scrollY; route(); scrollTo(0, y);
+  }));
+  $("#jreset").addEventListener("click", () => { Object.assign(CFG, { cap: 10000, risk: 2.5, stop: 25, max: 8 }); saveCfg(); route(); });
+  app.querySelectorAll("#jf [data-f]").forEach(b => b.addEventListener("click", () => { S.jf = b.dataset.f; S.jshow = 60; const y = scrollY; route(); scrollTo(0, y); }));
+  app.querySelector("[data-jmore]")?.addEventListener("click", () => { S.jshow += 100; const y = scrollY; route(); scrollTo(0, y); });
+  const ch = drawJournal(J);
+  const pick = (t, scroll) => {
+    S.sel = t ? t.ei + t.t : null;
+    app.querySelectorAll("tr[data-j]").forEach(r => r.classList.toggle("sel", r.dataset.j === S.sel));
+    if (ch) ch.focus(t);
+    $("#jdet").innerHTML = t ? detail(t) : "";
+    if (scroll) $("#jchart").scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  app.querySelectorAll("tr[data-j]").forEach(tr => tr.addEventListener("click", e => { if (e.target.closest("a")) return; pick(J.taken.find(t => t.ei + t.t === tr.dataset.j), true); }));
+  $("#jall").addEventListener("click", () => pick(null));
+  if (S.sel) { const t = J.taken.find(t => t.ei + t.t === S.sel); if (t) pick(t); }
+}
+function detail(t) {
+  const s = t.s;
+  return `<div class="panel jdet"><div class="panel-h"><h2>${tickLink(t.t)} · ${dDE(DATES[t.ei])} bis ${t.why === "offen" ? "heute" : dDE(DATES[t.xi])}</h2><span class="badge ${WHY[t.why]}">${t.why}</span></div>
+  <div class="panel-b"><div class="plan">
+    <div><span class="k">Ergebnis</span><b class="${cls(t.ret)}">${pct(t.ret)} · ${t.pnl >= 0 ? "+" : "−"}$${nf0.format(Math.abs(t.pnl))}</b></div>
+    <div><span class="k">Position</span><b>$${nf0.format(t.size)} (${nf1.format(t.pos)} %)</b></div>
+    <div><span class="k">Tiefster Punkt</span><b class="neg">${pct(t.mae)} am ${dS(DATES[t.maeK])}</b></div>
+    <div><span class="k">Höchster Punkt</span><b class="pos">${pct(t.mfe)}</b></div>
+    <div><span class="k">S&amp;P gleiche Zeit</span><b>${pct(t.sp)}</b></div>
+    <div><span class="k">Unter 52W-Hoch</span><b>${nf0.format(s.fh)} %</b></div>
+  </div><p class="hint" style="margin:10px 0 0">${s.n} Käufer: ${names(s.m, 8)}${s.o ? ` · ${s.o} Verkäufer` : ""} · gemeldet ${dDE(s.d)}</p></div></div>`;
+}
+function drawJournal(J) {
+  const el = $("#jeq"), el2 = $("#jdd");
+  if (!window.LightweightCharts || J.eq.length < 2) { el.innerHTML = `<div class="empty">Chart nicht verfügbar.</div>`; return null; }
+  const fmt$ = v => "$" + nf0.format(v);
+  const c = LightweightCharts.createChart(el, { ...chartOpts(fmt$), timeScale: { borderColor: tok("--line"), minBarSpacing: 0.01 } }); charts.push(c);
+  const c2 = LightweightCharts.createChart(el2, { ...chartOpts(v => nf0.format(v) + " %"), timeScale: { visible: false, borderColor: tok("--line"), minBarSpacing: 0.01 } }); charts.push(c2);
+  const ks = J.eq.map((_, n) => J.i0 + n);
+  let sp = null;
+  if (CAL) { sp = c.addLineSeries({ color: tok("--chart-spy"), lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }); const b = CAL[J.i0]; sp.setData(ks.filter(k => CAL[k] > 0).map(k => ({ time: DATES[k], value: CFG.cap * CAL[k] / b }))); }
+  const acc = tok("--accent");
+  const s = c.addAreaSeries({ lineColor: acc, topColor: acc + "33", bottomColor: acc + "00", lineWidth: 2, priceLineVisible: false });
+  s.setData(J.eq.map((v, n) => ({ time: DATES[J.i0 + n], value: v })));
+  const neg = tok("--neg");
+  const d = c2.addAreaSeries({ lineColor: neg, topColor: neg + "05", bottomColor: neg + "55", lineWidth: 1.5, priceLineVisible: false, invertFilledArea: false });
+  d.setData(J.dd.map((v, n) => ({ time: DATES[J.i0 + n], value: v * 100 })));
+  const base = J.done.map(t => ({ time: DATES[t.xi], position: "inBar", color: t.pnl > 0 ? tok("--pos") : neg, shape: "circle", size: 0.5 }));
+  const sortM = m => m.sort((a, b) => a.time < b.time ? -1 : a.time > b.time ? 1 : 0);
+  s.setMarkers(sortM([...base]));
+  d.createPriceLine({ price: J.mdd, color: neg, lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: "max" });
+  // Zeitachsen koppeln
+  let lock = false;
+  const sync = (a, b) => a.timeScale().subscribeVisibleLogicalRangeChange(r => { if (lock || !r) return; lock = true; b.timeScale().setVisibleLogicalRange(r); lock = false; });
+  sync(c, c2); sync(c2, c);
+  c.timeScale().fitContent(); c2.timeScale().fitContent();
+  // Legende
+  const leg = $("#jleg");
+  const show = k => {
+    const n = k - J.i0, op = J.taken.filter(t => t.ei <= k && (t.why === "offen" || k < t.xi));
+    leg.innerHTML = `<b>${dDE(DATES[k])}</b> · Konto <b>${money(J.eq[n])}</b> · Rückgang <span class="${J.dd[n] < 0 ? "neg" : ""}">${pct(J.dd[n] * 100)}</span>${CAL && sp ? ` · S&amp;P ${money(CFG.cap * CAL[k] / CAL[J.i0])}` : ""}<br>${op.length ? `offen (${op.length}): ` + op.map(t => `${esc(t.t)} <span class="${cls(t.p[k - t.ei] - 1)}">${pct((t.p[k - t.ei] - 1) * 100)}</span>`).join(", ") : '<span class="mut">keine Trades offen, alles Cash</span>'}`;
+  };
+  const idx = new Map(ks.map(k => [DATES[k], k]));
+  show(LAST);
+  c.subscribeCrosshairMove(p => { const k = p && p.time ? idx.get(typeof p.time === "string" ? p.time : `${p.time.year}-${String(p.time.month).padStart(2, "0")}-${String(p.time.day).padStart(2, "0")}`) : null; show(k ?? LAST); });
+  return { focus(t) {
+    if (!t) { s.setMarkers(sortM([...base])); c.timeScale().fitContent(); show(LAST); return; }
+    const m = base.filter(x => x.time !== DATES[t.xi]);
+    m.push({ time: DATES[t.ei], position: "belowBar", color: acc, shape: "arrowUp", text: "Kauf " + t.t });
+    if (t.why !== "offen") m.push({ time: DATES[t.xi], position: "aboveBar", color: t.pnl > 0 ? tok("--pos") : neg, shape: "arrowDown", text: `${t.t} ${pct(t.ret)}` });
+    s.setMarkers(sortM(m));
+    const a = Math.max(0, t.ei - J.i0 - 30), b = Math.min(J.eq.length - 1, t.xi - J.i0 + 30);
+    c.timeScale().setVisibleLogicalRange({ from: a, to: b });
+    show(t.why === "offen" ? LAST : t.xi);
+  } };
 }
 
 // ================================================================== Aktie
@@ -228,7 +440,8 @@ function route() {
   killCharts();
   const h = decodeURIComponent(location.hash.slice(1));
   const app = $("#app");
-  try { if (h.startsWith("t.")) viewTicker(app, h.slice(2)); else viewMain(app); }
+  document.querySelectorAll("nav.tabs a").forEach(a => a.setAttribute("aria-current", (h === "journal") === (a.dataset.nav === "journal") ? "page" : "false"));
+  try { if (h.startsWith("t.")) viewTicker(app, h.slice(2)); else if (h === "journal") viewJournal(app); else viewMain(app); }
   catch (e) { console.error(e); app.innerHTML = `<div class="err">Fehler beim Anzeigen: ${esc(e.message)}</div>`; }
 }
 window.addEventListener("hashchange", () => { route(); scrollTo(0, 0); });
