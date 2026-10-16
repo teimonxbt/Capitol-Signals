@@ -156,6 +156,11 @@ td.rank{color:var(--muted);font-family:var(--f-mono);font-size:12px;width:1%}
 .badge.cm{background:var(--accent-soft);color:var(--accent)}
 .badge.new{background:var(--pos-soft);color:var(--pos)}
 .badge.dip{background:var(--pos-soft);color:var(--pos)}
+.tagline{font:500 12px/1.3 var(--f-mono);color:var(--muted);letter-spacing:.02em}
+.plan{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:10px;border-radius:8px;background:var(--surface-2);border:1px solid var(--line)}
+.plan>div{display:grid;gap:1px;min-width:0}.plan b{font-variant-numeric:tabular-nums;font-size:13.5px;white-space:nowrap}
+ol.rules{margin:0;padding-left:20px;display:grid;gap:6px;font-size:13.5px;color:var(--ink-2)}ol.rules b{color:var(--ink)}
+@media (max-width:420px){.plan{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .badge.mut{background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
 .cmk{color:var(--accent);font-weight:600}
 .verdict{font-size:15px;line-height:1.5;padding:14px 16px;border-radius:var(--r);background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
@@ -181,17 +186,12 @@ footer.foot{max-width:1240px;margin:0 auto;padding:0 20px 40px;font-size:12px;co
 <body>
 <header class="top">
   <div class="top-in">
-    <a class="brand" href="#cluster"><b>Capitol <i>Signals</i></b></a>
-    <nav class="tabs" id="tabs">
-      <a href="#cluster" data-v="cluster">Cluster</a>
-      <a href="#ausschuss" data-v="ausschuss">Ausschuss-Insider</a>
-      <a href="#top" data-v="top">Top-Politiker</a>
-    </nav>
-    <div class="holdbox"><span>Haltedauer</span><div class="seg" id="hold" role="group" aria-label="Haltedauer"><button type="button" data-v="30">30 Tage</button><button type="button" data-v="60">60 Tage</button><button type="button" data-v="90">90 Tage</button></div></div>
+    <a class="brand" href="#"><b>Capitol <i>Signals</i></b></a>
+    <span class="tagline">Politiker-Käufe in stark gefallenen Aktien · 30 Tage halten</span>
   </div>
   <div class="stand" id="stand">Lade Daten …</div>
 </header>
-<main id="app"><div class="loading">Lade Signale …</div></main>
+<main id="app"><div class="loading">Lade Dip-Cluster …</div></main>
 <footer class="foot">Keine Anlageberatung. Alle Renditen sind historisch, ohne Gebühren und Steuern, Einstieg jeweils zum Schlusskurs nach der Veröffentlichung. Daten: Pflichtmeldungen nach dem STOCK Act (House Clerk, Senate eFD, OGE), Kurse von Yahoo Finance.</footer>
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="app.js"></script>
