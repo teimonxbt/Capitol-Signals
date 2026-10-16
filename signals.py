@@ -146,6 +146,9 @@ def build(members, rows, dates, px, bench="SPY"):
                 rec["lp"] = round(float(col[last]), 2)
             allc.append(rec)
             if fh is not None and fh <= DIP:
+                if i is not None and col[i] > 0:
+                    seg = col[i:min(i + HOLD, last) + 1]
+                    rec["path"] = [round(float(v / col[i]), 4) if v > 0 else None for v in seg]
                 sig.append(rec)
     sig.sort(key=lambda s: (s["d"], s["n"]), reverse=True)
 
