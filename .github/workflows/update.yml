@@ -40,6 +40,8 @@ jobs:
       - run: pip install -r requirements.txt
 
       - run: python update.py
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}   # optional: Webhook-URL als Repository-Secret anlegen
 
       # Neue Cluster-Signale als GitHub-Issue melden (GitHub schickt dir dazu eine E-Mail)
       - name: Benachrichtigung bei neuen Signalen
