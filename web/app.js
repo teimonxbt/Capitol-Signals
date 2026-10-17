@@ -9,13 +9,17 @@ let charts = [];
 const S = { show: 25, jf: "alle", jshow: 60, sel: null };
 let CAL = null, SIM = null, SIMKEY = "";
 // Einstellungen (Journal + Positionsgröße), gespeichert im Browser
-const CFG = { cap: 10000, risk: 2.5, stop: 25, max: 8 };
+const DEF = { cap: 10000, risk: 2.5, stop: 25, max: 8, rest: "ma", ma: 100 };
+const CFG = { ...DEF };
 try {
   const c = JSON.parse(localStorage.getItem("cs-cfg") || "null");
   if (c) Object.assign(CFG, c); else { const d = Number(localStorage.getItem("cs-depot")); if (d > 0) CFG.cap = d; }
 } catch (e) {}
 const saveCfg = () => { try { localStorage.setItem("cs-cfg", JSON.stringify(CFG)); } catch (e) {} };
 const posPct = () => Math.min(100, CFG.risk / CFG.stop * 100);
+const restTxt = () => CFG.rest === "spy" ? "Zwischen den Trades liegt das freie Geld im S&amp;P 500." : CFG.rest === "ma" ? `Zwischen den Trades liegt das freie Geld im S&amp;P 500, solange er über seinem ${CFG.ma}-Tage-Durchschnitt schließt, sonst als Cash.` : "Zwischen den Trades liegt das Geld als Cash (ohne Zinsen).";
+let MAC = { L: 0, v: null };
+const spyMA = L => { if (MAC.L === L && MAC.v) return MAC.v; const o = []; let s = 0, n = 0, q = []; for (let k = 0; k < CAL.length; k++) { const x = CAL[k] > 0 ? CAL[k] : (k ? CAL[k - 1] : 0); q.push(x); s += x; if (q.length > L) s -= q.shift(); o.push(s / q.length); } MAC = { L, v: o }; return o; };
 
 // ------------------------------------------------------------------ helpers
 const nf0 = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
@@ -97,7 +101,8 @@ function chartOpts(pf) {
 // ------------------------------------------------------------------ Journal-Simulation
 // Tägliche Bewertung: Konto startet 2020 mit CFG.cap in Cash. Jedes Dip-Cluster bekommt Risiko ÷ Stop
 // vom aktuellen Kontowert (wenn genug Cash da ist und weniger als CFG.max Trades offen sind).
-// Verkauf beim ersten Schlusskurs unter dem Stop oder nach 21 Handelstagen. Rest bleibt Cash (0 % Zins).
+// Verkauf beim ersten Schlusskurs unter dem Stop oder nach 21 Handelstagen. Freies Geld: Cash, S&P oder S&P nur über
+// seinem Durchschnitt (Entscheidung zum Schlusskurs, gilt ab dem nächsten Tag).
 function sim() {
   const key = JSON.stringify(CFG) + D.asof;
   if (SIM && SIMKEY === key) return SIM;
@@ -112,8 +117,14 @@ function sim() {
   }).sort((a, b) => a.ei - b.ei || b.s.n - a.s.n);
   const byEntry = new Map();
   for (const t of T) { if (!byEntry.has(t.ei)) byEntry.set(t.ei, []); byEntry.get(t.ei).push(t); }
-  let cash = CFG.cap; const open = new Set(), eq = [], nOpen = [];
+  let cash = CFG.cap; const open = new Set(), eq = [], nOpen = [], inSpy = [];
+  const rest = CAL ? CFG.rest : "cash", MAv = rest === "ma" ? spyMA(Math.max(5, Math.round(CFG.ma))) : null;
+  let sw = 0;
   for (let k = i0; k <= LAST; k++) {
+    const on = k > i0 && (rest === "spy" || (rest === "ma" && CAL[k - 1] > MAv[k - 1]));
+    if (on && CAL[k] > 0 && CAL[k - 1] > 0) cash *= CAL[k] / CAL[k - 1];
+    if (k > i0 + 1 && rest === "ma" && (CAL[k - 1] > MAv[k - 1]) !== (CAL[k - 2] > MAv[k - 2])) sw++;
+    inSpy.push(rest === "spy" || (rest === "ma" && CAL[k] > MAv[k]));
     for (const t of [...open]) if (t.why !== "offen" && t.xi === k) { cash += t.size * t.p[t.x]; open.delete(t); }
     let e = cash; for (const t of open) e += t.size * t.p[k - t.ei];
     for (const t of byEntry.get(k) || []) {
@@ -159,7 +170,7 @@ function sim() {
     y0 = k;
   }
   const byRet = [...done].sort((a, b) => b.ret - a.ret);
-  SIM = { i0, T, taken, done, eq, dd, nOpen, end, mdd: mdd * 100, mddK, mddPk,
+  SIM = { i0, T, taken, done, eq, dd, nOpen, inSpy, rest, swYr: sw / yrs, spyTime: 100 * inSpy.filter(Boolean).length / inSpy.length, end, mdd: mdd * 100, mddK, mddPk,
     cagr: (Math.pow(end / CFG.cap, 1 / yrs) - 1) * 100, tot: (end / CFG.cap - 1) * 100,
     spCagr: CAL && CAL[i0] > 0 ? (Math.pow(CAL[LAST] / CAL[i0], 1 / yrs) - 1) * 100 : null, spMdd: spMdd * 100,
     win: done.length ? 100 * wins.length / done.length : null,
@@ -193,6 +204,7 @@ function viewMain(app) {
       <li><b>Kurz prüfen (5 Min.):</b> Warum ist die Aktie gefallen? Bei Betrugsverdacht, Insolvenzgefahr oder Delisting nicht kaufen. Kurs über 5 $, Börsenwert über ca. 2 Mrd. $. Ist sie seit dem Signal schon über 10–15 % gestiegen, auslassen.</li>
       <li><b>Kaufen</b> am nächsten Handelstag zum Schlusskurs, <b>${nf1.format(posPct())} % des Kontos</b> je Trade (= ${nf1.format(CFG.risk)} % Risiko bei ${CFG.stop} % Stop), höchstens ${CFG.max} Trades gleichzeitig und höchstens 2 aus derselben Branche. <a href="#journal">Ändern im Journal</a></li>
       <li><b>Notfall-Stop −${CFG.stop} %</b> auf Schlusskurs-Basis, kein enger Stop.</li>
+      <li><b>Freies Geld:</b> ${restTxt()}${CFG.rest === "ma" && CAL ? ` Heute: S&amp;P ${CAL[LAST] > spyMA(CFG.ma)[LAST] ? "<b class=\"pos\">über</b> dem Durchschnitt → investiert" : "<b class=\"neg\">unter</b> dem Durchschnitt → Cash"}.` : ""}</li>
       <li><b>Nach ${RU.days} Tagen verkaufen</b>, egal wie der Trade steht.</li>
       <li><b>Jeden Trade notieren.</b> Nach 20–30 Trades prüfen: Schlagen weniger als die Hälfte den S&amp;P, aufhören.</li>
     </ol></div>
@@ -207,7 +219,7 @@ function viewMain(app) {
     <div class="tile"><div class="k">Signale</div><div class="v">${nf0.format(st.n)}</div><div class="d">≈ ${nf0.format(st.n / Math.max(1, (Date.parse(D.asof) - Date.parse("2020-01-01")) / 3.156e10))} pro Jahr</div></div>
   </div>
   <div class="panel"><div class="panel-h"><h2>Konto nach den Regeln</h2><div class="legend-row"><span><span class="sw" style="background:var(--accent)"></span>Dip-Cluster</span><span><span class="sw" style="background:var(--chart-spy)"></span>S&amp;P 500 gehalten</span><a class="btn primary" href="#journal">Journal öffnen →</a></div></div>
-    <div class="panel-b"><div class="chart sm" id="eq"></div><p class="hint" style="margin:8px 0 0">Simulation ab 2020 mit ${money(CFG.cap)}: nur die Dip-Cluster-Trades, ${nf1.format(posPct())} % des Kontos je Trade, höchstens ${CFG.max} gleichzeitig, Stop −${CFG.stop} %, Verkauf nach ${RU.days} Tagen. Zwischen den Trades liegt das Geld als Cash. Ohne Gebühren und Steuern. Jeden einzelnen Trade siehst du im Journal.</p></div></div>
+    <div class="panel-b"><div class="chart sm" id="eq"></div><p class="hint" style="margin:8px 0 0">Simulation ab 2020 mit ${money(CFG.cap)}: nur die Dip-Cluster-Trades, ${nf1.format(posPct())} % des Kontos je Trade, höchstens ${CFG.max} gleichzeitig, Stop −${CFG.stop} %, Verkauf nach ${RU.days} Tagen. ${restTxt()} Ohne Gebühren und Steuern. Jeden einzelnen Trade siehst du im Journal.</p></div></div>
   <div class="grid2">
     <div class="panel"><div class="panel-h"><h2>Nach Jahr</h2></div><div class="tbl-wrap"><table><thead><tr><th>Jahr</th><th class="n">Signale</th><th class="n">schlägt S&amp;P</th><th class="n">Ø vs S&amp;P</th></tr></thead><tbody>${st.years.map(y => `<tr><td class="num">${y.y}</td><td class="n">${y.n}</td><td class="n">${q(y.beat)}</td><td class="n">${pc(y.ex)}</td></tr>`).join("")}</tbody></table></div></div>
     <div class="note"><b>Ehrlich:</b> Nur rund 15 Signale pro Jahr. Ein großer Teil der Gewinne kam nach Markt-Crashs (2020, April 2025). In ruhigen Märkten gibt es weniger und schwächere Signale. Getestet wurden auch normale Cluster, Ausschuss-Käufe, Top-Politiker, Firmen-Insider, technische Filter sowie Haltedauern von 60 und 90 Tagen: Nichts davon schlug den S&amp;P verlässlich, deshalb ist es nicht mehr auf der Seite. Keine Anlageberatung.</div>
@@ -283,6 +295,8 @@ function viewJournal(app) {
     <label class="ctl"><span>Risiko pro Trade (%)</span><input type="number" data-k="risk" min="0.1" max="25" step="0.5" value="${CFG.risk}"></label>
     <label class="ctl"><span>Stop (% unter Einstieg)</span><input type="number" data-k="stop" min="5" max="60" step="5" value="${CFG.stop}"></label>
     <label class="ctl"><span>Max. gleichzeitig</span><input type="number" data-k="max" min="1" max="30" step="1" value="${CFG.max}"></label>
+    <label class="ctl"><span>Freies Geld</span><select id="jrest"><option value="cash"${CFG.rest === "cash" ? " selected" : ""}>Cash</option><option value="spy"${CFG.rest === "spy" ? " selected" : ""}>immer im S&amp;P 500</option><option value="ma"${CFG.rest === "ma" ? " selected" : ""}>S&amp;P 500 über Durchschnitt</option></select></label>
+    ${CFG.rest === "ma" ? `<label class="ctl"><span>Durchschnitt (Tage)</span><input type="number" data-k="ma" min="10" max="300" step="10" value="${CFG.ma}"></label>` : ""}
     <div class="jpos"><span>Positionsgröße</span><b>${nf1.format(posPct())} %</b><small>= Risiko ÷ Stop · heute ${money(CFG.cap * posPct() / 100)}</small></div>
     <button class="btn ghost" id="jreset" type="button">Standard</button>
   </div></div>
@@ -292,6 +306,7 @@ function viewJournal(app) {
     ${tile("Rendite pro Jahr", pct(J.cagr), `S&amp;P 500 gehalten: ${pct(J.spCagr)}`, cls(J.cagr))}
     ${tile("Max. Rückgang", pct(J.mdd), `am ${dDE(DATES[J.mddK])} · S&amp;P: ${pct(J.spMdd)}`, "neg")}
     ${tile("Trades", nf0.format(J.done.length), `≈ ${nf0.format(J.perYear)} pro Jahr · ${J.skipped} ausgelassen`)}
+    ${J.rest !== "cash" ? tile("Freies Geld im S&amp;P", q(J.spyTime) + " der Zeit", J.rest === "ma" ? `≈ ${nf1.format(J.swYr)} Wechsel pro Jahr · MA${CFG.ma}` : "immer investiert") : ""}
     ${tile("Trefferquote", q(J.win), `schlägt den S&amp;P: ${q(J.beat)}`)}
     ${tile("Ø Gewinner / Verlierer", `<span class="pos">${pct(J.avgW)}</span> <span class="neg">${pct(J.avgL)}</span>`, `RR ${J.avgL ? "1 : " + nf2.format(J.avgW / -J.avgL) : "–"}`)}
     ${tile("Profit-Faktor", J.pf == null ? "–" : nf2.format(J.pf), `Ø ${J.expR == null ? "–" : (J.expR > 0 ? "+" : "") + nf2.format(J.expR)} R pro Trade`)}
@@ -301,7 +316,7 @@ function viewJournal(app) {
 
   <div class="panel" id="jchart"><div class="panel-h"><h2>Kontoverlauf</h2><div class="legend-row"><span><span class="sw" style="background:var(--accent)"></span>Konto</span>${CAL ? `<span><span class="sw" style="background:var(--chart-spy)"></span>Gleicher Betrag im S&amp;P 500</span>` : ""}<span><span class="sw dot" style="background:var(--pos)"></span>Gewinn-Trade</span><span><span class="sw dot" style="background:var(--neg)"></span>Verlust-Trade</span><button class="btn" id="jall" type="button">Alles zeigen</button></div></div>
     <div class="panel-b"><div class="chart" id="jeq"><div class="chart-legend" id="jleg"></div></div><div class="chart dd" id="jdd"></div>
-    <p class="hint" style="margin:8px 0 0">Oben das Konto in $, unten der Rückgang vom letzten Höchststand. Punkte = Verkauf eines Trades (grün Gewinn, rot Verlust). Ohne Gebühren, Steuern und Zinsen auf Cash.</p></div></div>
+    <p class="hint" style="margin:8px 0 0">Oben das Konto in $, unten der Rückgang vom letzten Höchststand. Punkte = Verkauf eines Trades (grün Gewinn, rot Verlust). ${restTxt()} Ohne Gebühren und Steuern.</p></div></div>
   <div id="jdet"></div>
 
   <div class="panel"><div class="panel-h"><h2>Trades</h2><div class="chips" id="jf">${[["alle", "Alle"], ["gewinner", "Gewinner"], ["verlierer", "Verlierer"], ["stop", "Stops"], ["offen", "Offen"], ["skip", "Ausgelassen"]].map(([k, l]) => `<button type="button" class="chip${f === k ? " on" : ""}" data-f="${k}">${l}</button>`).join("")}</div></div>
@@ -328,9 +343,10 @@ function viewJournal(app) {
 
   app.querySelectorAll(".jset input").forEach(inp => inp.addEventListener("change", () => {
     const v = Number(inp.value); if (!(v > 0)) return;
-    CFG[inp.dataset.k] = inp.dataset.k === "max" ? Math.round(v) : v; saveCfg(); const y = scrollY; route(); scrollTo(0, y);
+    CFG[inp.dataset.k] = inp.dataset.k === "max" || inp.dataset.k === "ma" ? Math.round(v) : v; saveCfg(); const y = scrollY; route(); scrollTo(0, y);
   }));
-  $("#jreset").addEventListener("click", () => { Object.assign(CFG, { cap: 10000, risk: 2.5, stop: 25, max: 8 }); saveCfg(); route(); });
+  $("#jrest").addEventListener("change", e => { CFG.rest = e.target.value; saveCfg(); const y = scrollY; route(); scrollTo(0, y); });
+  $("#jreset").addEventListener("click", () => { Object.assign(CFG, DEF); saveCfg(); route(); });
   app.querySelectorAll("#jf [data-f]").forEach(b => b.addEventListener("click", () => { S.jf = b.dataset.f; S.jshow = 60; const y = scrollY; route(); scrollTo(0, y); }));
   app.querySelector("[data-jmore]")?.addEventListener("click", () => { S.jshow += 100; const y = scrollY; route(); scrollTo(0, y); });
   const ch = drawJournal(J);
@@ -385,7 +401,7 @@ function drawJournal(J) {
   const leg = $("#jleg");
   const show = k => {
     const n = k - J.i0, op = J.taken.filter(t => t.ei <= k && (t.why === "offen" || k < t.xi));
-    leg.innerHTML = `<b>${dDE(DATES[k])}</b> · Konto <b>${money(J.eq[n])}</b> · Rückgang <span class="${J.dd[n] < 0 ? "neg" : ""}">${pct(J.dd[n] * 100)}</span>${CAL && sp ? ` · S&amp;P ${money(CFG.cap * CAL[k] / CAL[J.i0])}` : ""}<br>${op.length ? `offen (${op.length}): ` + op.map(t => `${esc(t.t)} <span class="${cls(t.p[k - t.ei] - 1)}">${pct((t.p[k - t.ei] - 1) * 100)}</span>`).join(", ") : '<span class="mut">keine Trades offen, alles Cash</span>'}`;
+    leg.innerHTML = `<b>${dDE(DATES[k])}</b> · Konto <b>${money(J.eq[n])}</b> · Rückgang <span class="${J.dd[n] < 0 ? "neg" : ""}">${pct(J.dd[n] * 100)}</span>${CAL && sp ? ` · S&amp;P ${money(CFG.cap * CAL[k] / CAL[J.i0])}` : ""}<br>${op.length ? `offen (${op.length}): ` + op.map(t => `${esc(t.t)} <span class="${cls(t.p[k - t.ei] - 1)}">${pct((t.p[k - t.ei] - 1) * 100)}</span>`).join(", ") : '<span class="mut">keine Trades offen</span>'}${J.rest !== "cash" ? ` · freies Geld: ${J.inSpy[n] ? "im S&amp;P" : "Cash"}` : ""}`;
   };
   const idx = new Map(ks.map(k => [DATES[k], k]));
   show(LAST);
