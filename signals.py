@@ -31,6 +31,7 @@ CURVE_START = "2020-01-01"
 STEP = 5
 NOISE = re.compile(r"reinvest|dividend", re.I)
 BIG = 100000       # ein Politiker reicht ab diesem Betrag (Untergrenze der Meldespanne)
+LIVE_START = "2026-10-16"   # ab hier zählt die Live-Bilanz (alles davor ist Backtest)
 
 
 def _r(col, i, j):
@@ -194,7 +195,7 @@ def build(members, rows, dates, px, bench="SPY", ins=None):
     return {
         "asof": dates[-1], "dates": dates, "curveDates": cd,
         "rules": {"hold": HOLD, "days": 30, "win": WIN, "min_n": MIN_N, "dip": DIP, "cooldown": COOLDOWN,
-                  "stop": STOP, "target": TARGET, "size": SIZE, "big": BIG},
+                  "stop": STOP, "target": TARGET, "size": SIZE, "big": BIG, "live": LIVE_START},
         "signals": sig, "curve": curve,
         "bench": {"SPY": _bcurve(spy, i0), "QQQ": _bcurve(qqq, i0) if qqq is not None else None},
         "compare": {"dip": stats(sig), "alle": stats(allc), "ohne_dip": stats([x for x in allc if x not in sig])},
@@ -220,11 +221,121 @@ def write_ticker_trades(out_dir, members, rows, used):
             for v in bk.values() for arr in v.values() for i in {x[0] for x in arr}}
 
 
+# ====================================================================== Vor-Check (Ampel) für offene Signale
+def _exit_date(dates, i):
+    """Datum des Verkaufstags (Einstieg + HOLD Handelstage); in der Zukunft grob über Werktage geschätzt."""
+    last = len(dates) - 1
+    k = (i if i is not None else last + 1) + HOLD
+    if k <= last:
+        return dates[k]
+    d, rest = date.fromisoformat(dates[last]), k - last
+    while rest > 0:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            rest -= 1
+    return d.isoformat()
+
+
+def vorcheck(sigs, dates):
+    """Holt Börsenwert, Handelsvolumen und Termin der Quartalszahlen (Yahoo) und bewertet jedes offene Signal:
+    grün = ok, gelb = genauer hinschauen, rot = eher auslassen. Die Schwellen sind Vorsichts-Regeln, nicht getestet."""
+    try:
+        import yfinance as yf
+    except Exception:  # noqa
+        yf = None
+    for s in sigs:
+        info, earn = {}, None
+        if yf is not None:
+            try:
+                tk = yf.Ticker(s["t"])
+                info = tk.get_info() or {}
+                cal = tk.calendar or {}
+                ed = cal.get("Earnings Date") if isinstance(cal, dict) else None
+                if ed:
+                    earn = str(ed[0])[:10]
+            except Exception as e:  # noqa
+                print("Vor-Check", s["t"], type(e).__name__, str(e)[:80], flush=True)
+        cap = info.get("marketCap")
+        vol = info.get("averageDailyVolume10Day") or info.get("averageVolume")
+        lp = s.get("lp")
+        adv = vol * lp if vol and lp else None
+        ex = _exit_date(dates, s.get("i"))
+        red, yel = [], []
+        if lp is not None and lp < 5:
+            red.append(f"Kurs unter 5 $ ({lp:.2f} $)")
+        if cap is None:
+            yel.append("keine Firmendaten gefunden")
+        elif cap < 3e8:
+            red.append(f"sehr klein: Börsenwert {cap / 1e6:.0f} Mio. $")
+        elif cap < 2e9:
+            yel.append(f"klein: Börsenwert {cap / 1e9:.1f} Mrd. $")
+        if adv is not None:
+            if adv < 2e6:
+                red.append(f"wenig Handel: ~{adv / 1e6:.1f} Mio. $ pro Tag")
+            elif adv < 1e7:
+                yel.append(f"mäßiger Handel: ~{adv / 1e6:.0f} Mio. $ pro Tag")
+        today = dates[-1]
+        if earn and today <= earn <= ex:
+            yel.append(f"Quartalszahlen am {earn[8:10]}.{earn[5:7]}. (vor dem Verkauf, Kurssprung möglich)")
+        fresh = s.get("i") is None or len(dates) - 1 - s["i"] <= 3      # nur für einen frischen Einstieg relevant
+        run = (s["lp"] / s["ep"] - 1) * 100 if fresh and s.get("ep") and s.get("lp") else None
+        if run is not None and run > 15:
+            red.append(f"seit Einstieg schon +{run:.0f} %")
+        elif run is not None and run > 10:
+            yel.append(f"seit Einstieg schon +{run:.0f} %")
+        s["chk"] = {"lvl": "r" if red else "y" if yel else "g", "why": red + yel, "cap": cap, "adv": round(adv) if adv else None,
+                    "earn": earn, "exit": ex, "name": info.get("shortName")}
+
+
+# ====================================================================== Discord
+def discord(webhook, payloads):
+    import requests
+    import time as _t
+    for p in payloads:
+        try:
+            r = requests.post(webhook, json=p, timeout=20)
+            if r.status_code == 429:
+                _t.sleep(2)
+                requests.post(webhook, json=p, timeout=20)
+            elif r.status_code >= 300:
+                print("Discord:", r.status_code, r.text[:200], flush=True)
+            _t.sleep(1)
+        except Exception as e:  # noqa
+            print("Discord-Fehler:", type(e).__name__, str(e)[:120], flush=True)
+
+
+AMP = {"g": ("GRÜN", 0x2EA043), "y": ("GELB", 0xD29922), "r": ("ROT", 0xDA3633)}
+
+
+def _embed_signal(s, nm, site_url):
+    c = s.get("chk") or {}
+    lvl = c.get("lvl", "y")
+    lp = s.get("lp")
+    stop = round(lp * (1 + STOP / 100), 2) if lp else None
+    who = f'{s["n"]} Politiker' + (f" (Kauf ab {s['big'] // 1000}k $)" if s.get("big") else "")
+    f = [{"name": "Käufer", "value": f'{who}: {", ".join(nm(i) for i in s["m"][:5])}', "inline": False},
+         {"name": "Unter 52W-Hoch", "value": f'{s["fh"]:.0f} %', "inline": True},
+         {"name": "Letzter Kurs", "value": f"{lp} $" if lp else "–", "inline": True},
+         {"name": f"Stop ({STOP} %)", "value": f"{stop} $" if stop else "–", "inline": True},
+         {"name": "Kauf", "value": "zum nächsten Schlusskurs" if s.get("i") is None else f'Schluss {s.get("ep")} $', "inline": True},
+         {"name": "Verkauf ca.", "value": c.get("exit", "–"), "inline": True},
+         {"name": f"Vor-Check: {AMP[lvl][0]}", "value": "\n".join("• " + w for w in c.get("why", [])) or "• alles ok", "inline": False}]
+    e = {"title": f'Neues Dip-Signal: {s["t"]}' + (f' ({c["name"]})' if c.get("name") else ""),
+         "color": AMP[lvl][1], "fields": f,
+         "footer": {"text": f'Gemeldet {s["d"]} · Positionsgröße laut Journal · keine Anlageberatung'}}
+    if site_url:
+        e["url"] = f"{site_url}#t.{s['t']}"
+    return e
+
+
 def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", site_url="", *_, **__):
     D = build(members, rows, dates, px, bench)
     extra = write_ticker_trades(out_dir, members, rows, set(D["tickers"]))
     for i, v in extra.items():
         D["members"].setdefault(i, v)
+    last = len(dates) - 1
+    open_sigs = [s for s in D["signals"] if s.get("i") is None or s["i"] + HOLD > last]
+    vorcheck(open_sigs, dates)
     json.dump(D, open(os.path.join(out_dir, "dash.json"), "w"), separators=(",", ":"), ensure_ascii=False)
 
     # ------------------------------------------------------------------ Benachrichtigung (GitHub Issue → E-Mail)
@@ -239,6 +350,32 @@ def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", sit
     key = lambda s: f'D|{s["t"]}|{s["d"]}'
     new = [s for s in D["signals"] if key(s) not in seen and s["d"] >= recent]
     seen |= {key(s) for s in D["signals"]}
+
+    # Discord: neue Signale, Verkaufstag, Stop – nur wenn das Secret DISCORD_WEBHOOK gesetzt ist
+    hook = os.environ.get("DISCORD_WEBHOOK", "").strip()
+    if hook:
+        msgs = []
+        if "discord_ok" not in seen:
+            op = ", ".join(f'{s["t"]} ({s.get("chk", {}).get("lvl", "?").upper()})' for s in open_sigs) or "keine"
+            msgs.append({"content": f"**Capitol Signals ist verbunden.** Neue Dip-Signale, Verkaufstage und Stops kommen ab jetzt hier rein.\nGerade offen: {op}\n{site_url}"})
+            seen.add("discord_ok")
+        for k in range(0, len(new), 10):
+            msgs.append({"embeds": [_embed_signal(s, nm, site_url) for s in new[k:k + 10]]})
+        for s in open_sigs:
+            if s.get("i") is None or not s.get("ep") or not s.get("lp"):
+                continue
+            r = (s["lp"] / s["ep"] - 1) * 100
+            if s["lp"] <= s["ep"] * (1 + STOP / 100) and f'S|{s["t"]}|{s["d"]}' not in seen:
+                msgs.append({"content": f'**Stop erreicht: {s["t"]}** – Schlusskurs {s["lp"]} $ ({r:+.1f} % seit Einstieg {s["ep"]} $). Laut Regel verkaufen.'})
+                seen.add(f'S|{s["t"]}|{s["d"]}')
+        for s in D["signals"]:
+            if s.get("i") is not None and s["i"] + HOLD - 1 == last and f'X|{s["t"]}|{s["d"]}' not in seen:
+                r = (s["lp"] / s["ep"] - 1) * 100 if s.get("ep") and s.get("lp") else None
+                msgs.append({"content": f'**Morgen verkaufen: {s["t"]}** – 30 Tage sind morgen voll (Verkauf zum Schlusskurs). '
+                                        f'Stand: {"%+.1f %%" % r if r is not None else "–"} seit Einstieg.'})
+                seen.add(f'X|{s["t"]}|{s["d"]}')
+        discord(hook, msgs)
+        print(f"Discord: {len(msgs)} Nachricht(en)", flush=True)
     json.dump(sorted(seen), open(seen_file, "w"))
     if new:
         title = "Dip-Cluster: " + ", ".join(s["t"] for s in new[:6]) + (" …" if len(new) > 6 else "")
