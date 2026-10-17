@@ -197,11 +197,12 @@ function viewMain(app) {
 
   <h3 class="sec">Jetzt offen <small>${open.length ? `${open.length} Signal${open.length === 1 ? "" : "e"}` : ""}</small></h3>
   ${open.length ? `<div class="cards">${open.map(card).join("")}</div>` : `<div class="panel empty">Gerade kein offenes Dip-Cluster. Neue Signale kommen per E-Mail (GitHub-Benachrichtigung).</div>`}
+  ${livePanel()}
 
   <div class="panel" style="padding:14px 16px"><h2 style="font:600 15px/1.2 var(--f-body);margin:0 0 8px">So wird getradet</h2>
     <ol class="rules">
-      <li><b>Signal kommt</b> per E-Mail oder steht oben bei „Jetzt offen“.</li>
-      <li><b>Kurz prüfen (5 Min.):</b> Warum ist die Aktie gefallen? Bei Betrugsverdacht, Insolvenzgefahr oder Delisting nicht kaufen. Kurs über 5 $, Börsenwert über ca. 2 Mrd. $. Ist sie seit dem Signal schon über 10–15 % gestiegen, auslassen.</li>
+      <li><b>Signal kommt</b> per E-Mail, Discord oder steht oben bei „Jetzt offen“.</li>
+      <li><b>Kurz prüfen (5 Min.):</b> Der Vor-Check (Ampel) auf der Karte hilft dabei. Warum ist die Aktie gefallen? Bei Betrugsverdacht, Insolvenzgefahr oder Delisting nicht kaufen. Kurs über 5 $, Börsenwert über ca. 2 Mrd. $. Ist sie seit dem Signal schon über 10–15 % gestiegen, auslassen.</li>
       <li><b>Kaufen</b> am nächsten Handelstag zum Schlusskurs, <b>${nf1.format(posPct())} % des Kontos</b> je Trade (= ${nf1.format(CFG.risk)} % Risiko bei ${CFG.stop} % Stop), höchstens ${CFG.max} Trades gleichzeitig und höchstens 2 aus derselben Branche. <a href="#journal">Ändern im Journal</a></li>
       <li><b>Notfall-Stop −${CFG.stop} %</b> auf Schlusskurs-Basis, kein enger Stop.</li>
       <li><b>Freies Geld:</b> ${restTxt()}${CFG.rest === "ma" && CAL ? ` Heute: S&amp;P ${CAL[LAST] > spyMA(CFG.ma)[LAST] ? "<b class=\"pos\">über</b> dem Durchschnitt → investiert" : "<b class=\"neg\">unter</b> dem Durchschnitt → Cash"}.` : ""}</li>
@@ -249,6 +250,7 @@ function card(s) {
       <div><span class="k">Risiko</span><b class="neg">${pos ? "$" + nf0.format(pos * CFG.stop / 100) : "–"}</b></div>
       <div><span class="k">Verkauf ${st.exit > DATES[LAST] ? "ca." : ""}</span><b>${dS(st.exit)}</b></div>
     </div>
+    ${ampel(s)}
     ${pos ? `<div class="hint">Position: ${nf1.format(posPct())} % = <b>$${nf0.format(pos)}</b>${sh ? ` ≈ ${nf0.format(sh)} Aktien zu ${usd(s.lp)}` : ""}</div>` : ""}
     <div class="cnums">
       <div><span class="k">seit Einstieg</span><b class="${cls(s.rn)}">${st.pending ? "–" : pct(s.rn)}</b></div>
@@ -257,6 +259,25 @@ function card(s) {
     </div>
     <div class="prog"><i style="width:${Math.round(st.prog * 100)}%"></i></div>
     ${run != null && run > 10 ? `<div class="hint neg">Schon ${pct(run)} seit dem Einstiegstag gestiegen, der Vorteil ist eventuell weg.</div>` : ""}</a>`;
+}
+const AMPL = { g: "grün", y: "gelb", r: "rot" };
+function ampel(s) {
+  const c = s.chk; if (!c) return "";
+  return `<div class="amp ${c.lvl}"><b>Vor-Check: ${AMPL[c.lvl]}</b>${c.why.length ? `<ul>${c.why.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : `<span> · Börsenwert, Handel und Zahlen-Termin ok</span>`}</div>`;
+}
+function livePanel() {
+  const LV = RU.live; if (!LV) return "";
+  const live = D.signals.filter(s => s.d >= LV), done = live.filter(s => s.r != null && s.s != null);
+  const st = stats(D.signals.filter(s => s.d < LV));
+  const n = done.length, win = n ? 100 * done.filter(s => s.r > 0).length / n : null, beat = n ? 100 * done.filter(s => s.r > s.s).length / n : null;
+  const avg = n ? done.reduce((a, s) => a + s.r, 0) / n : null, ex = n ? done.reduce((a, s) => a + s.r - s.s, 0) / n : null;
+  return `<div class="panel live"><div class="panel-h"><h2>Live-Bilanz <small class="mut">seit ${dDE(LV)}</small></h2><span class="sub">nur Signale ab diesem Tag · kein Backtest</span></div>
+  <div class="panel-b"><div class="tiles">
+    <div class="tile"><div class="k">Signale live</div><div class="v">${live.length}</div><div class="d">${n} abgeschlossen · ${live.length - n} offen</div></div>
+    <div class="tile"><div class="k">Treffer</div><div class="v">${q(win)}</div><div class="d">Backtest: ${q(st.hit)}</div></div>
+    <div class="tile"><div class="k">Schlägt den S&amp;P</div><div class="v">${q(beat)}</div><div class="d">Backtest: ${q(st.beat)}</div></div>
+    <div class="tile"><div class="k">Ø pro Trade</div><div class="v ${cls(avg)}">${pct(avg)}</div><div class="d">vs S&amp;P ${pct(ex)} · Backtest ${pct(st.ex)}</div></div>
+  </div>${n < 20 ? `<p class="hint" style="margin:10px 0 0">${n ? `Erst ${n} abgeschlossene${n === 1 ? "r" : ""} Trade${n === 1 ? "" : "s"}.` : "Noch kein Live-Trade abgeschlossen."} Aussagekräftig wird die Bilanz ab etwa 20–30 Trades. Gemessen über 30 Tage ab Meldung, ohne Stop.</p>` : ""}</div></div>`;
 }
 function pastTable() {
   const done = D.signals.filter(s => s.r != null);
@@ -282,7 +303,7 @@ function viewJournal(app) {
   const J = sim();
   const f = S.jf, list = [...J.T].reverse().filter(t =>
     f === "alle" ? true : f === "gewinner" ? !t.skip && t.why !== "offen" && t.pnl > 0 : f === "verlierer" ? !t.skip && t.why !== "offen" && t.pnl <= 0 :
-    f === "stop" ? !t.skip && t.why === "Stop" : f === "offen" ? !t.skip && t.why === "offen" : !!t.skip);
+    f === "stop" ? !t.skip && t.why === "Stop" : f === "offen" ? !t.skip && t.why === "offen" : f === "live" ? t.s.d >= (RU.live || "9") : !!t.skip);
   const num = new Map(J.taken.map((t, n) => [t, n + 1]));
   const tile = (k, v, d, c = "") => `<div class="tile"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="d">${d}</div></div>`;
   const pend = D.signals.filter(s => s.i == null);
@@ -319,12 +340,12 @@ function viewJournal(app) {
     <p class="hint" style="margin:8px 0 0">Oben das Konto in $, unten der Rückgang vom letzten Höchststand. Punkte = Verkauf eines Trades (grün Gewinn, rot Verlust). ${restTxt()} Ohne Gebühren und Steuern.</p></div></div>
   <div id="jdet"></div>
 
-  <div class="panel"><div class="panel-h"><h2>Trades</h2><div class="chips" id="jf">${[["alle", "Alle"], ["gewinner", "Gewinner"], ["verlierer", "Verlierer"], ["stop", "Stops"], ["offen", "Offen"], ["skip", "Ausgelassen"]].map(([k, l]) => `<button type="button" class="chip${f === k ? " on" : ""}" data-f="${k}">${l}</button>`).join("")}</div></div>
+  <div class="panel"><div class="panel-h"><h2>Trades</h2><div class="chips" id="jf">${[["alle", "Alle"], ["gewinner", "Gewinner"], ["verlierer", "Verlierer"], ["stop", "Stops"], ["offen", "Offen"], ["skip", "Ausgelassen"], ["live", "Live"]].map(([k, l]) => `<button type="button" class="chip${f === k ? " on" : ""}" data-f="${k}">${l}</button>`).join("")}</div></div>
   <div class="tbl-wrap"><table class="jt"><thead><tr><th class="n">#</th><th>Aktie</th><th>Kauf</th><th>Verkauf</th><th>Grund</th><th class="n">Position</th><th class="n">Ergebnis</th><th class="n">Gewinn $</th><th class="n">R</th><th class="n" title="Tiefster Stand während des Trades">Max. im Minus</th><th class="n" title="Höchster Stand während des Trades">Max. im Plus</th><th class="n">S&amp;P</th><th class="n" title="Größter Rückgang des ganzen Kontos während der Trade lief">Konto-DD</th><th class="n">Konto danach</th></tr></thead>
   <tbody>${pend.map(s => `<tr class="mut"><td class="n">–</td><td>${tickLink(s.t)}</td><td class="num">nächster Schluss</td><td class="num">–</td><td><span class="badge new">wartet</span></td><td class="n" colspan="9" style="text-align:left">Gemeldet am ${dDE(s.d)}, Kauf zum nächsten Schlusskurs</td></tr>`).join("")}
   ${list.slice(0, S.jshow).map(t => t.skip
     ? `<tr class="mut"><td class="n">–</td><td>${tickLink(t.t)}</td><td class="num">${dDE(DATES[t.ei])}</td><td class="num">–</td><td>ausgelassen</td><td class="n" colspan="9" style="text-align:left">${esc(t.skip)} · hätte ${pct((t.p[t.x] - 1) * 100)} gebracht</td></tr>`
-    : `<tr class="click${S.sel === t.ei + t.t ? " sel" : ""}" data-j="${esc(t.ei + t.t)}"><td class="n mut">${num.get(t)}</td><td>${tickLink(t.t)}</td>
+    : `<tr class="click${S.sel === t.ei + t.t ? " sel" : ""}" data-j="${esc(t.ei + t.t)}"><td class="n mut">${num.get(t)}</td><td>${tickLink(t.t)}${RU.live && t.s.d >= RU.live ? ' <span class="badge live">live</span>' : ""}</td>
       <td class="num">${dDE(DATES[t.ei])}<br><span class="mut">${usd(t.s.ep)}</span></td>
       <td class="num">${t.why === "offen" ? "läuft" : dDE(DATES[t.xi])}<br><span class="mut">${t.s.ep ? usd(t.s.ep * t.p[t.x]) : ""}</span></td>
       <td><span class="badge ${WHY[t.why]}">${t.why === "offen" ? `offen · noch ${RU.hold - t.x} HT` : t.why}</span></td>
