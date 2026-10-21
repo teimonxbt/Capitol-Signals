@@ -68,6 +68,7 @@ h3.sec small{font:400 13px/1.3 var(--f-body);color:var(--muted)}
 .controls{display:flex;flex-wrap:wrap;gap:14px 18px;align-items:flex-end}
 .ctl{display:grid;gap:5px;min-width:0}
 .ctl>span{font:500 10.5px/1 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.rq{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding-top:4px;border-top:1px dashed var(--line)}.rq>span{font:500 10.5px/1 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:2px;flex-wrap:wrap}
 .seg button{border:0;background:transparent;padding:6px 11px;border-radius:6px;cursor:pointer;color:var(--ink-2);font-weight:500;font-size:13px}
 .seg button:hover{color:var(--ink)}
@@ -163,6 +164,10 @@ td.rank{color:var(--muted);font-family:var(--f-mono);font-size:12px;width:1%}
 .amp ul{margin:4px 0 0;padding-left:18px}.amp.g{background:var(--pos-soft);color:var(--pos)}
 .amp.y{background:var(--warn-soft);color:var(--warn)}.amp.r{background:var(--neg-soft);color:var(--neg)}
 .badge.live{background:var(--accent-soft);color:var(--accent)}.panel.live{border-color:var(--accent)}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:5px;background:var(--surface);border:1px solid var(--line);border-radius:12px;max-width:560px}
+.seg a{display:grid;gap:2px;padding:10px 14px;border-radius:9px;text-decoration:none;color:var(--ink-2);text-align:center}
+.seg a b{font:600 15px/1.2 var(--f-body)}.seg a small{font:500 11px/1.2 var(--f-mono);letter-spacing:.04em;color:var(--muted)}
+.seg a:hover{background:var(--surface-2)}.seg a.on{background:var(--accent);color:var(--accent-ink)}.seg a.on small{color:var(--accent-ink);opacity:.8}
 .chart.dd{height:150px;margin-top:4px}
 #jchart{scroll-margin-top:90px}
 .jset .panel-b{display:flex;flex-wrap:wrap;gap:14px;align-items:end}
@@ -204,7 +209,7 @@ footer.foot{max-width:1240px;margin:0 auto;padding:0 20px 40px;font-size:12px;co
   <div class="top-in">
     <a class="brand" href="#"><b>Capitol <i>Signals</i></b></a>
     <span class="tagline">Politiker-Käufe in stark gefallenen Aktien · 30 Tage halten</span>
-    <nav class="tabs"><a href="#" data-nav="main">Signale</a><a href="#journal" data-nav="journal">Journal</a></nav>
+    <nav class="tabs"><a href="#" data-nav="main">Signale</a><a href="#trades" data-nav="trades">Nur Trades</a><a href="#journal" data-nav="journal">Trades + S&amp;P</a></nav>
   </div>
   <div class="stand" id="stand">Lade Daten …</div>
 </header>
