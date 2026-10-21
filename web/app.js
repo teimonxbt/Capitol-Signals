@@ -9,13 +9,20 @@ let charts = [];
 const S = { show: 25, jf: "alle", jshow: 60, sel: null };
 let CAL = null, SIM = null, SIMKEY = "";
 // Einstellungen (Journal + Positionsgröße), gespeichert im Browser
-const DEF = { cap: 10000, risk: 2.5, stop: 25, max: 8, rest: "ma", ma: 100 };
-const CFG = { ...DEF };
+// Zwei getrennte Backtests mit eigenen Einstellungen: "sp" = Trades + S&P 500, "tr" = nur Trades (Rest Cash)
+const DEFS = { sp: { cap: 10000, risk: 2.5, stop: 25, max: 8, rest: "ma", ma: 100 },
+               tr: { cap: 10000, risk: 2.5, stop: 25, max: 8, rest: "cash", ma: 100 } };
+const CFGS = { sp: { ...DEFS.sp }, tr: { ...DEFS.tr } };
 try {
   const c = JSON.parse(localStorage.getItem("cs-cfg") || "null");
-  if (c) Object.assign(CFG, c); else { const d = Number(localStorage.getItem("cs-depot")); if (d > 0) CFG.cap = d; }
+  if (c) Object.assign(CFGS.sp, c); else { const d = Number(localStorage.getItem("cs-depot")); if (d > 0) CFGS.sp.cap = CFGS.tr.cap = d; }
+  const t = JSON.parse(localStorage.getItem("cs-cfg-tr") || "null");
+  if (t) Object.assign(CFGS.tr, t); else if (c) Object.assign(CFGS.tr, { cap: c.cap, risk: c.risk, stop: c.stop, max: c.max });
 } catch (e) {}
-const saveCfg = () => { try { localStorage.setItem("cs-cfg", JSON.stringify(CFG)); } catch (e) {} };
+if (CFGS.sp.rest === "cash") CFGS.sp.rest = "ma";
+CFGS.tr.rest = "cash";
+let CFG = CFGS.sp, MODE = "sp";
+const saveCfg = () => { try { localStorage.setItem("cs-cfg", JSON.stringify(CFGS.sp)); localStorage.setItem("cs-cfg-tr", JSON.stringify(CFGS.tr)); } catch (e) {} };
 const posPct = () => Math.min(100, CFG.risk / CFG.stop * 100);
 const restTxt = () => CFG.rest === "spy" ? "Zwischen den Trades liegt das freie Geld im S&amp;P 500." : CFG.rest === "ma" ? `Zwischen den Trades liegt das freie Geld im S&amp;P 500, solange er über seinem ${CFG.ma}-Tage-Durchschnitt schließt, sonst als Cash.` : "Zwischen den Trades liegt das Geld als Cash (ohne Zinsen).";
 let MAC = { L: 0, v: null };
@@ -299,7 +306,14 @@ function drawEq(J) {
 
 // ================================================================== Journal
 const WHY = { "Stop": "neg", "30 Tage": "", "offen": "new" };
-function viewJournal(app) {
+const MODES = {
+  tr: { nav: "trades", eyebrow: "Backtest · nur Trades", h: "Nur die Dip-Trades",
+        p: "Das Konto handelt ausschließlich die Dip-Cluster-Signale. Zwischen den Trades liegt das Geld als Cash. So siehst du, was die Strategie allein bringt und wie sich das Risiko pro Trade auswirkt." },
+  sp: { nav: "journal", eyebrow: "Backtest · Trades + S&P 500", h: "Dip-Trades plus S&P 500",
+        p: "Die Dip-Signale haben Vorrang. Das restliche Geld liegt im S&P 500, wahlweise immer oder nur solange der Index über seinem Durchschnitt liegt. Das ist die empfohlene Kombination." },
+};
+function viewJournal(app, mode) {
+  const M = MODES[mode];
   const J = sim();
   const f = S.jf, list = [...J.T].reverse().filter(t =>
     f === "alle" ? true : f === "gewinner" ? !t.skip && t.why !== "offen" && t.pnl > 0 : f === "verlierer" ? !t.skip && t.why !== "offen" && t.pnl <= 0 :
@@ -308,18 +322,20 @@ function viewJournal(app) {
   const tile = (k, v, d, c = "") => `<div class="tile"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="d">${d}</div></div>`;
   const pend = D.signals.filter(s => s.i == null);
   app.innerHTML = `
-  <div class="view-head"><div><div class="eyebrow">Backtest-Journal</div><h1>Jeder Trade seit 2020</h1>
-    <p>So wäre dein Konto gelaufen, wenn du jedes Dip-Cluster nach den Regeln gekauft hättest. Klick auf einen Trade zeigt ihn im Chart.</p></div></div>
+  <div class="seg" role="tablist"><a href="#trades" class="${mode === "tr" ? "on" : ""}"><b>Nur Trades</b><small>Rest als Cash</small></a><a href="#journal" class="${mode === "sp" ? "on" : ""}"><b>Trades + S&amp;P 500</b><small>Rest im Index</small></a></div>
+  <div class="view-head"><div><div class="eyebrow">${M.eyebrow}</div><h1>${M.h}</h1>
+    <p>${M.p} Klick auf einen Trade zeigt ihn im Chart.</p></div></div>
 
   <div class="panel jset"><div class="panel-b">
     <label class="ctl"><span>Startkapital 2020 ($)</span><input type="number" data-k="cap" min="100" step="1000" value="${CFG.cap}"></label>
     <label class="ctl"><span>Risiko pro Trade (%)</span><input type="number" data-k="risk" min="0.1" max="25" step="0.5" value="${CFG.risk}"></label>
     <label class="ctl"><span>Stop (% unter Einstieg)</span><input type="number" data-k="stop" min="5" max="60" step="5" value="${CFG.stop}"></label>
     <label class="ctl"><span>Max. gleichzeitig</span><input type="number" data-k="max" min="1" max="30" step="1" value="${CFG.max}"></label>
-    <label class="ctl"><span>Freies Geld</span><select id="jrest"><option value="cash"${CFG.rest === "cash" ? " selected" : ""}>Cash</option><option value="spy"${CFG.rest === "spy" ? " selected" : ""}>immer im S&amp;P 500</option><option value="ma"${CFG.rest === "ma" ? " selected" : ""}>S&amp;P 500 über Durchschnitt</option></select></label>
-    ${CFG.rest === "ma" ? `<label class="ctl"><span>Durchschnitt (Tage)</span><input type="number" data-k="ma" min="10" max="300" step="10" value="${CFG.ma}"></label>` : ""}
+    ${mode === "sp" ? `<label class="ctl"><span>S&amp;P-Anteil</span><select id="jrest"><option value="spy"${CFG.rest === "spy" ? " selected" : ""}>immer im S&amp;P 500</option><option value="ma"${CFG.rest === "ma" ? " selected" : ""}>S&amp;P 500 über Durchschnitt</option></select></label>` : ""}
+    ${mode === "sp" && CFG.rest === "ma" ? `<label class="ctl"><span>Durchschnitt (Tage)</span><input type="number" data-k="ma" min="10" max="300" step="10" value="${CFG.ma}"></label>` : ""}
     <div class="jpos"><span>Positionsgröße</span><b>${nf1.format(posPct())} %</b><small>= Risiko ÷ Stop · heute ${money(CFG.cap * posPct() / 100)}</small></div>
     <button class="btn ghost" id="jreset" type="button">Standard</button>
+    <div class="rq"><span>Risiko schnell wählen</span><div class="chips">${[1, 1.5, 2, 2.5, 3, 4, 5].map(r => `<button type="button" class="chip${CFG.risk === r ? " on" : ""}" data-r="${r}">${nf1.format(r)} %</button>`).join("")}</div></div>
   </div></div>
 
   <div class="tiles">
@@ -366,8 +382,9 @@ function viewJournal(app) {
     const v = Number(inp.value); if (!(v > 0)) return;
     CFG[inp.dataset.k] = inp.dataset.k === "max" || inp.dataset.k === "ma" ? Math.round(v) : v; saveCfg(); const y = scrollY; route(); scrollTo(0, y);
   }));
-  $("#jrest").addEventListener("change", e => { CFG.rest = e.target.value; saveCfg(); const y = scrollY; route(); scrollTo(0, y); });
-  $("#jreset").addEventListener("click", () => { Object.assign(CFG, DEF); saveCfg(); route(); });
+  app.querySelectorAll(".rq [data-r]").forEach(b => b.addEventListener("click", () => { CFG.risk = Number(b.dataset.r); saveCfg(); const y = scrollY; route(); scrollTo(0, y); }));
+  $("#jrest")?.addEventListener("change", e => { CFG.rest = e.target.value; saveCfg(); const y = scrollY; route(); scrollTo(0, y); });
+  $("#jreset").addEventListener("click", () => { Object.assign(CFG, DEFS[mode]); saveCfg(); route(); });
   app.querySelectorAll("#jf [data-f]").forEach(b => b.addEventListener("click", () => { S.jf = b.dataset.f; S.jshow = 60; const y = scrollY; route(); scrollTo(0, y); }));
   app.querySelector("[data-jmore]")?.addEventListener("click", () => { S.jshow += 100; const y = scrollY; route(); scrollTo(0, y); });
   const ch = drawJournal(J);
@@ -478,8 +495,10 @@ function route() {
   killCharts();
   const h = decodeURIComponent(location.hash.slice(1));
   const app = $("#app");
-  document.querySelectorAll("nav.tabs a").forEach(a => a.setAttribute("aria-current", (h === "journal") === (a.dataset.nav === "journal") ? "page" : "false"));
-  try { if (h.startsWith("t.")) viewTicker(app, h.slice(2)); else if (h === "journal") viewJournal(app); else viewMain(app); }
+  const nav = h === "journal" || h === "trades" ? h : h.startsWith("t.") ? "" : "main";
+  document.querySelectorAll("nav.tabs a").forEach(a => a.setAttribute("aria-current", a.dataset.nav === nav ? "page" : "false"));
+  MODE = h === "trades" ? "tr" : "sp"; CFG = CFGS[MODE];
+  try { if (h.startsWith("t.")) viewTicker(app, h.slice(2)); else if (nav === "journal" || nav === "trades") viewJournal(app, MODE); else viewMain(app); }
   catch (e) { console.error(e); app.innerHTML = `<div class="err">Fehler beim Anzeigen: ${esc(e.message)}</div>`; }
 }
 window.addEventListener("hashchange", () => { route(); scrollTo(0, 0); });
