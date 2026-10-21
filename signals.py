@@ -95,8 +95,10 @@ def _bcurve(col, i0):
     return v
 
 
-def build(members, rows, dates, px, bench="SPY", ins=None):
-    ins = ins or {}
+def build(members, rows, dates, px, bench="SPY", ins=None, first_seen=None):
+    """first_seen: {"TICKER|Meldedatum": Datum, an dem das Signal zum ersten Mal in unseren Daten stand}. Für Live-Signale
+    (ab LIVE_START) wird der Einstieg auf den Schlusskurs NACH diesem Tag gelegt – so wie man es wirklich handeln kann."""
+    ins, first_seen = ins or {}, first_seen or {}
     n = len(dates)
     last = n - 1
     cols = {c: px[c].values for c in px.columns}
@@ -145,8 +147,15 @@ def build(members, rows, dates, px, bench="SPY", ins=None):
                 last_all = pos
             if dip_ok:
                 last_sig = pos
+            fs = first_seen.get(f"{tk}|{d}") if d >= LIVE_START else None
+            if fs:
+                k2 = bisect.bisect_right(dates, fs)          # erster Handelstag nach dem Tag, an dem wir es sehen konnten
+                if i is None or k2 > i:
+                    i = k2 if k2 < n else None
             rec = {"t": tk, "d": d, "i": i, "n": len(b), "o": len(s), "m": sorted(b), "fh": fh,
                    "vol": round(sum(((u["lo"] or 0) + (u["hi"] or u["lo"] or 0)) / 2 for u in w if u["side"] == "P"))}
+            if fs and fs > d:
+                rec["seen"] = fs
             if ni:
                 rec["ins"] = 1
             if big >= BIG and len(b) + ni < MIN_N:
@@ -329,7 +338,17 @@ def _embed_signal(s, nm, site_url):
 
 
 def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", site_url="", *_, **__):
-    D = build(members, rows, dates, px, bench)
+    # Wann stand ein Signal zum ersten Mal in unseren Daten? (Nachlieferungen der Quelle sonst unsichtbar)
+    fs_file = os.path.join(cache_dir, "first_seen.json")
+    seen_at = json.load(open(fs_file)) if os.path.exists(fs_file) else {}
+    D = build(members, rows, dates, px, bench, first_seen=seen_at)
+    fresh = {f'{s["t"]}|{s["d"]}' for s in D["signals"]} - set(seen_at)
+    if fresh:
+        for k in fresh:
+            seen_at[k] = dates[-1]
+        json.dump(seen_at, open(fs_file, "w"))
+        if any(k.split("|")[1] >= LIVE_START for k in fresh):
+            D = build(members, rows, dates, px, bench, first_seen=seen_at)
     extra = write_ticker_trades(out_dir, members, rows, set(D["tickers"]))
     for i, v in extra.items():
         D["members"].setdefault(i, v)
