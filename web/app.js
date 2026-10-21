@@ -250,7 +250,7 @@ function card(s) {
   return `<a class="card" href="#t.${encodeURIComponent(s.t)}">
     <div class="card-h"><div class="ctk"><b>${esc(s.t)}</b><span>${esc(t.a || "")}</span></div>
       <div style="display:grid;gap:4px;justify-items:end">${st.pending || LAST - s.i < 5 ? '<span class="badge new">neu</span>' : ""}<span class="badge dip">▼ ${nf0.format(s.fh)} % unter Hoch</span></div></div>
-    <div class="cwho"><b>${who(s)}</b>${s.o ? ` · <span class="neg">${s.o} Verkäufer</span>` : ""} · bis ${dS(s.d)} gemeldet · ~${money(s.vol)}<br>${names(s.m)}</div>
+    <div class="cwho"><b>${who(s)}</b>${s.o ? ` · <span class="neg">${s.o} Verkäufer</span>` : ""} · bis ${dS(s.d)} gemeldet${s.seen ? ` <span class="neg" title="Die Datenquelle hat die Meldung erst später geliefert. Einstieg zählt ab diesem Tag.">(in den Daten erst ${dS(s.seen)})</span>` : ""} · ~${money(s.vol)}<br>${names(s.m)}</div>
     <div class="plan">
       <div><span class="k">${st.pending ? "Kauf" : "Einstieg"}</span><b>${st.pending ? "nächster Schluss" : usd(s.ep)}</b></div>
       <div><span class="k">Stop −${CFG.stop} %</span><b class="neg">${usd(stop)}</b></div>
