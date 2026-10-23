@@ -4,10 +4,15 @@ name: Daten aktualisieren und veröffentlichen
 on:
   schedule:
     - cron: "17 23 * * 1-5"   # 23:17 UTC = nach US-Börsenschluss
-  workflow_dispatch: {}        # manuell starten: Actions -> "Run workflow"
+  workflow_dispatch:           # manuell starten: Actions -> "Run workflow"
+    inputs:
+      keepalive_test:
+        description: "Keep-alive-Commit testweise sofort ausführen"
+        type: boolean
+        default: false
 
 permissions:
-  contents: read
+  contents: write    # nur für den Keep-alive-Commit
   pages: write
   id-token: write
   issues: write
@@ -50,6 +55,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh issue create --repo "$GITHUB_REPOSITORY" --title "$(head -n 1 alerts.md)" --body-file alerts.md --assignee "$GITHUB_REPOSITORY_OWNER"
+
+      # GitHub pausiert geplante Workflows nach 60 Tagen ohne Commit. Ist der letzte Commit 45+ Tage alt,
+      # macht dieser Schritt einen leeren Commit – dann laufen die täglichen Updates weiter.
+      - name: Keep-alive
+        if: github.event_name == 'schedule' || inputs.keepalive_test
+        continue-on-error: true
+        run: |
+          age=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "Letzter Commit vor $age Tagen"
+          if [ "$age" -ge 45 ] || [ "${{ inputs.keepalive_test }}" = "true" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "Keep-alive: automatischer Commit (sonst pausiert GitHub die täglichen Updates)"
+            git push
+          else
+            echo "Kein Keep-alive nötig."
+          fi
 
       - uses: actions/cache/save@v4
         if: always()
