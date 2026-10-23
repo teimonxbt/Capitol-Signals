@@ -226,6 +226,12 @@ def load_prices(symbols, full=False, downloader=download_batch):
     if os.path.exists(failed_file) and not full:
         raw = json.load(open(failed_file))
         tries = raw.get("tries", {}) if isinstance(raw, dict) and raw.get("v") == 2 else {}
+        # einmal im Monat alle "fehlgeschlagenen" Ticker neu versuchen (Yahoo meldet bei Überlastung fälschlich "delisted")
+        if not isinstance(raw, dict) or not raw.get("reset") or (date.today() - date.fromisoformat(raw["reset"])).days >= 30:
+            if tries:
+                log(f"Monatlicher Neuversuch für {len(tries)} Ticker ohne Kurse")
+            tries = {}
+    reset_day = raw.get("reset") if os.path.exists(failed_file) and not full and isinstance(raw, dict) and tries else date.today().isoformat()
 
     def merge(df):
         nonlocal prices
@@ -246,7 +252,7 @@ def load_prices(symbols, full=False, downloader=download_batch):
 
     def persist():
         prices.sort_index().to_pickle(cache_file)
-        json.dump({"v": 2, "tries": tries}, open(failed_file, "w"))
+        json.dump({"v": 2, "tries": tries, "reset": reset_day}, open(failed_file, "w"))
 
     state = {"streak": 0, "blocked": False}
 
