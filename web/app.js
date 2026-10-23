@@ -10,8 +10,8 @@ const S = { show: 25, jf: "alle", jshow: 60, sel: null };
 let CAL = null, SIM = null, SIMKEY = "";
 // Einstellungen (Journal + Positionsgröße), gespeichert im Browser
 // Zwei getrennte Backtests mit eigenen Einstellungen: "sp" = Trades + S&P 500, "tr" = nur Trades (Rest Cash)
-const DEFS = { sp: { cap: 10000, risk: 2.5, stop: 25, max: 8, rest: "ma", ma: 100 },
-               tr: { cap: 10000, risk: 2.5, stop: 25, max: 8, rest: "cash", ma: 100 } };
+const DEFS = { sp: { cap: 10000, risk: 2.5, stop: 25, max: 8, sec: 2, rest: "ma", ma: 100 },
+               tr: { cap: 10000, risk: 2.5, stop: 25, max: 8, sec: 2, rest: "cash", ma: 100 } };
 const CFGS = { sp: { ...DEFS.sp }, tr: { ...DEFS.tr } };
 try {
   const c = JSON.parse(localStorage.getItem("cs-cfg") || "null");
@@ -22,6 +22,11 @@ try {
 if (CFGS.sp.rest === "cash") CFGS.sp.rest = "ma";
 CFGS.tr.rest = "cash";
 let CFG = CFGS.sp, MODE = "sp";
+// Branchen (Yahoo-Sektor) – höchstens CFG.sec offene Trades aus derselben Branche (research/sector.py)
+const SEC_DE = { "Technology": "Technologie", "Healthcare": "Gesundheit", "Consumer Cyclical": "Zyklischer Konsum", "Consumer Defensive": "Basiskonsum",
+  "Financial Services": "Finanzen", "Industrials": "Industrie", "Energy": "Energie", "Communication Services": "Kommunikation",
+  "Basic Materials": "Rohstoffe", "Real Estate": "Immobilien", "Utilities": "Versorger" };
+const secOf = t => (D && D.sec || {})[t] || null, secDE = sc => SEC_DE[sc] || sc;
 const saveCfg = () => { try { localStorage.setItem("cs-cfg", JSON.stringify(CFGS.sp)); localStorage.setItem("cs-cfg-tr", JSON.stringify(CFGS.tr)); } catch (e) {} };
 const posPct = () => Math.min(100, CFG.risk / CFG.stop * 100);
 const restTxt = () => CFG.rest === "spy" ? "Zwischen den Trades liegt das freie Geld im S&amp;P 500." : CFG.rest === "ma" ? `Zwischen den Trades liegt das freie Geld im S&amp;P 500, solange er über seinem ${CFG.ma}-Tage-Durchschnitt schließt, sonst als Cash.` : "Zwischen den Trades liegt das Geld als Cash (ohne Zinsen).";
@@ -136,6 +141,8 @@ function sim() {
     let e = cash; for (const t of open) e += t.size * t.p[k - t.ei];
     for (const t of byEntry.get(k) || []) {
       if (open.size >= CFG.max) { t.skip = `schon ${CFG.max} offen`; continue; }
+      const sc = secOf(t.t);
+      if (CFG.sec && sc && [...open].filter(o => secOf(o.t) === sc).length >= CFG.sec) { t.skip = `schon ${CFG.sec} aus ${secDE(sc)} offen`; continue; }
       const want = e * pp, size = Math.min(want, cash);
       if (size < want * 0.5) { t.skip = "kein Cash frei"; continue; }
       t.size = size; cash -= size; open.add(t);
@@ -210,7 +217,7 @@ function viewMain(app) {
     <ol class="rules">
       <li><b>Signal kommt</b> per E-Mail, Discord oder steht oben bei „Jetzt offen“.</li>
       <li><b>Kurz prüfen (5 Min.):</b> Der Vor-Check (Ampel) auf der Karte hilft dabei. Warum ist die Aktie gefallen? Bei Betrugsverdacht, Insolvenzgefahr oder Delisting nicht kaufen. Kurs über 5 $, Börsenwert über ca. 2 Mrd. $. Ist sie seit dem Signal schon über 10–15 % gestiegen, auslassen.</li>
-      <li><b>Kaufen</b> am nächsten Handelstag zum Schlusskurs, <b>${nf1.format(posPct())} % des Kontos</b> je Trade (= ${nf1.format(CFG.risk)} % Risiko bei ${CFG.stop} % Stop), höchstens ${CFG.max} Trades gleichzeitig und höchstens 2 aus derselben Branche. <a href="#journal">Ändern im Journal</a></li>
+      <li><b>Kaufen</b> am nächsten Handelstag zum Schlusskurs, <b>${nf1.format(posPct())} % des Kontos</b> je Trade (= ${nf1.format(CFG.risk)} % Risiko bei ${CFG.stop} % Stop), höchstens ${CFG.max} Trades gleichzeitig und höchstens ${CFG.sec} aus derselben Branche. <a href="#journal">Ändern im Journal</a></li>
       <li><b>Notfall-Stop −${CFG.stop} %</b> auf Schlusskurs-Basis, kein enger Stop.</li>
       <li><b>Freies Geld:</b> ${restTxt()}${CFG.rest === "ma" && CAL ? ` Heute: S&amp;P ${CAL[LAST] > spyMA(CFG.ma)[LAST] ? "<b class=\"pos\">über</b> dem Durchschnitt → investiert" : "<b class=\"neg\">unter</b> dem Durchschnitt → Cash"}.` : ""}</li>
       <li><b>Nach ${RU.days} Tagen verkaufen</b>, egal wie der Trade steht.</li>
@@ -227,7 +234,7 @@ function viewMain(app) {
     <div class="tile"><div class="k">Signale</div><div class="v">${nf0.format(st.n)}</div><div class="d">≈ ${nf0.format(st.n / Math.max(1, (Date.parse(D.asof) - Date.parse("2020-01-01")) / 3.156e10))} pro Jahr</div></div>
   </div>
   <div class="panel"><div class="panel-h"><h2>Konto nach den Regeln</h2><div class="legend-row"><span><span class="sw" style="background:var(--accent)"></span>Dip-Cluster</span><span><span class="sw" style="background:var(--chart-spy)"></span>S&amp;P 500 gehalten</span><a class="btn primary" href="#journal">Journal öffnen →</a></div></div>
-    <div class="panel-b"><div class="chart sm" id="eq"></div><p class="hint" style="margin:8px 0 0">Simulation ab 2020 mit ${money(CFG.cap)}: nur die Dip-Cluster-Trades, ${nf1.format(posPct())} % des Kontos je Trade, höchstens ${CFG.max} gleichzeitig, Stop −${CFG.stop} %, Verkauf nach ${RU.days} Tagen. ${restTxt()} Ohne Gebühren und Steuern. Jeden einzelnen Trade siehst du im Journal.</p></div></div>
+    <div class="panel-b"><div class="chart sm" id="eq"></div><p class="hint" style="margin:8px 0 0">Simulation ab 2020 mit ${money(CFG.cap)}: nur die Dip-Cluster-Trades, ${nf1.format(posPct())} % des Kontos je Trade, höchstens ${CFG.max} gleichzeitig und ${CFG.sec} pro Branche, Stop −${CFG.stop} %, Verkauf nach ${RU.days} Tagen. ${restTxt()} Ohne Gebühren und Steuern. Jeden einzelnen Trade siehst du im Journal.</p></div></div>
   <div class="grid2">
     <div class="panel"><div class="panel-h"><h2>Nach Jahr</h2></div><div class="tbl-wrap"><table><thead><tr><th>Jahr</th><th class="n">Signale</th><th class="n">schlägt S&amp;P</th><th class="n">Ø vs S&amp;P</th></tr></thead><tbody>${st.years.map(y => `<tr><td class="num">${y.y}</td><td class="n">${y.n}</td><td class="n">${q(y.beat)}</td><td class="n">${pc(y.ex)}</td></tr>`).join("")}</tbody></table></div></div>
     <div class="note"><b>Ehrlich:</b> Nur rund 15 Signale pro Jahr. Ein großer Teil der Gewinne kam nach Markt-Crashs (2020, April 2025). In ruhigen Märkten gibt es weniger und schwächere Signale. Getestet wurden auch normale Cluster, Ausschuss-Käufe, Top-Politiker, Firmen-Insider, technische Filter sowie Haltedauern von 60 und 90 Tagen: Nichts davon schlug den S&amp;P verlässlich, deshalb ist es nicht mehr auf der Seite. Keine Anlageberatung.</div>
@@ -250,7 +257,7 @@ function card(s) {
   return `<a class="card" href="#t.${encodeURIComponent(s.t)}">
     <div class="card-h"><div class="ctk"><b>${esc(s.t)}</b><span>${esc(t.a || "")}</span></div>
       <div style="display:grid;gap:4px;justify-items:end">${st.pending || LAST - s.i < 5 ? '<span class="badge new">neu</span>' : ""}<span class="badge dip">▼ ${nf0.format(s.fh)} % unter Hoch</span></div></div>
-    <div class="cwho"><b>${who(s)}</b>${s.o ? ` · <span class="neg">${s.o} Verkäufer</span>` : ""} · bis ${dS(s.d)} gemeldet${s.seen ? ` <span class="neg" title="Die Datenquelle hat die Meldung erst später geliefert. Einstieg zählt ab diesem Tag.">(in den Daten erst ${dS(s.seen)})</span>` : ""} · ~${money(s.vol)}<br>${names(s.m)}</div>
+    <div class="cwho">${secOf(s.t) ? `<span class="mut">${esc(secDE(secOf(s.t)))}</span> · ` : ""}<b>${who(s)}</b>${s.o ? ` · <span class="neg">${s.o} Verkäufer</span>` : ""} · bis ${dS(s.d)} gemeldet${s.seen ? ` <span class="neg" title="Die Datenquelle hat die Meldung erst später geliefert. Einstieg zählt ab diesem Tag.">(in den Daten erst ${dS(s.seen)})</span>` : ""} · ~${money(s.vol)}<br>${names(s.m)}</div>
     <div class="plan">
       <div><span class="k">${st.pending ? "Kauf" : "Einstieg"}</span><b>${st.pending ? "nächster Schluss" : usd(s.ep)}</b></div>
       <div><span class="k">Stop −${CFG.stop} %</span><b class="neg">${usd(stop)}</b></div>
@@ -258,6 +265,7 @@ function card(s) {
       <div><span class="k">Verkauf ${st.exit > DATES[LAST] ? "ca." : ""}</span><b>${dS(st.exit)}</b></div>
     </div>
     ${ampel(s)}
+    ${secFull(s)}
     ${pos ? `<div class="hint">Position: ${nf1.format(posPct())} % = <b>$${nf0.format(pos)}</b>${sh ? ` ≈ ${nf0.format(sh)} Aktien zu ${usd(s.lp)}` : ""}</div>` : ""}
     <div class="cnums">
       <div><span class="k">seit Einstieg</span><b class="${cls(s.rn)}">${st.pending ? "–" : pct(s.rn)}</b></div>
@@ -266,6 +274,18 @@ function card(s) {
     </div>
     <div class="prog"><i style="width:${Math.round(st.prog * 100)}%"></i></div>
     ${run != null && run > 10 ? `<div class="hint neg">Schon ${pct(run)} seit dem Einstiegstag gestiegen, der Vorteil ist eventuell weg.</div>` : ""}</a>`;
+}
+// Würde das Signal laut Branchenlimit ausgelassen? (gleiche Logik wie im Journal)
+function secFull(s) {
+  const sc = secOf(s.t); if (!sc || !CFG.sec) return "";
+  const J = sim(), tr = J.T.find(x => x.s === s);
+  let full;
+  if (tr) full = !!(tr.skip && tr.skip.includes(" aus "));
+  else {   // noch nicht gekauft: offene Trades + frühere wartende Signale derselben Branche zählen
+    const wait = D.signals.filter(x => x.i == null && secOf(x.t) === sc);
+    full = J.taken.filter(x => x.why === "offen" && secOf(x.t) === sc).length + wait.indexOf(s) >= CFG.sec;
+  }
+  return full ? `<div class="hint neg"><b>Branchenlimit:</b> schon ${CFG.sec} Trades aus ${esc(secDE(sc))} offen, laut Regel auslassen.</div>` : "";
 }
 const AMPL = { g: "grün", y: "gelb", r: "rot" };
 function ampel(s) {
@@ -331,6 +351,7 @@ function viewJournal(app, mode) {
     <label class="ctl"><span>Risiko pro Trade (%)</span><input type="number" data-k="risk" min="0.1" max="25" step="0.5" value="${CFG.risk}"></label>
     <label class="ctl"><span>Stop (% unter Einstieg)</span><input type="number" data-k="stop" min="5" max="60" step="5" value="${CFG.stop}"></label>
     <label class="ctl"><span>Max. gleichzeitig</span><input type="number" data-k="max" min="1" max="30" step="1" value="${CFG.max}"></label>
+    <label class="ctl"><span>Max. pro Branche</span><input type="number" data-k="sec" min="1" max="30" step="1" value="${CFG.sec}"></label>
     ${mode === "sp" ? `<label class="ctl"><span>S&amp;P-Anteil</span><select id="jrest"><option value="spy"${CFG.rest === "spy" ? " selected" : ""}>immer im S&amp;P 500</option><option value="ma"${CFG.rest === "ma" ? " selected" : ""}>S&amp;P 500 über Durchschnitt</option></select></label>` : ""}
     ${mode === "sp" && CFG.rest === "ma" ? `<label class="ctl"><span>Durchschnitt (Tage)</span><input type="number" data-k="ma" min="10" max="300" step="10" value="${CFG.ma}"></label>` : ""}
     <div class="jpos"><span>Positionsgröße</span><b>${nf1.format(posPct())} %</b><small>= Risiko ÷ Stop · heute ${money(CFG.cap * posPct() / 100)}</small></div>
@@ -375,12 +396,12 @@ function viewJournal(app, mode) {
   <div class="grid2">
     <div class="panel"><div class="panel-h"><h2>Nach Jahr</h2></div><div class="tbl-wrap"><table><thead><tr><th>Jahr</th><th class="n">Konto</th><th class="n">S&amp;P</th><th class="n">Max. Rückgang</th><th class="n">Trades</th><th class="n">Treffer</th><th class="n">Kontostand</th></tr></thead>
     <tbody>${J.years.map(y => `<tr><td class="num">${y.y}</td><td class="n"><b class="${cls(y.ret)}">${pct(y.ret)}</b></td><td class="n mut">${pct(y.sp)}</td><td class="n neg">${pct(y.mdd)}</td><td class="n">${y.n}</td><td class="n">${q(y.win)}</td><td class="n">${money(y.endv)}</td></tr>`).join("")}</tbody></table></div></div>
-    <div class="note"><b>So liest du das:</b> <b>R</b> = Ergebnis geteilt durch das Risiko (−1 R = Stop getroffen). <b>Max. im Minus</b> = tiefster Schlusskurs während des Trades, also wie weh er zwischendurch tat. <b>Konto-DD</b> = wie weit das ganze Konto unter seinem Höchststand lag, während der Trade lief. <b>Ausgelassen</b> = Signal kam, als schon ${CFG.max} Trades offen waren oder kein Cash frei war.<br><br>Kurse sind Schlusskurse, der Stop greift auf Schlusskurs-Basis (im echten Handel kann ein Kurs auch darunter öffnen). Keine Anlageberatung.</div>
+    <div class="note"><b>So liest du das:</b> <b>R</b> = Ergebnis geteilt durch das Risiko (−1 R = Stop getroffen). <b>Max. im Minus</b> = tiefster Schlusskurs während des Trades, also wie weh er zwischendurch tat. <b>Konto-DD</b> = wie weit das ganze Konto unter seinem Höchststand lag, während der Trade lief. <b>Ausgelassen</b> = Signal kam, als schon ${CFG.max} Trades (oder ${CFG.sec} aus derselben Branche) offen waren oder kein Cash frei war.<br><br>Kurse sind Schlusskurse, der Stop greift auf Schlusskurs-Basis (im echten Handel kann ein Kurs auch darunter öffnen). Keine Anlageberatung.</div>
   </div>`;
 
   app.querySelectorAll(".jset input").forEach(inp => inp.addEventListener("change", () => {
     const v = Number(inp.value); if (!(v > 0)) return;
-    CFG[inp.dataset.k] = inp.dataset.k === "max" || inp.dataset.k === "ma" ? Math.round(v) : v; saveCfg(); const y = scrollY; route(); scrollTo(0, y);
+    CFG[inp.dataset.k] = ["max", "ma", "sec"].includes(inp.dataset.k) ? Math.round(v) : v; saveCfg(); const y = scrollY; route(); scrollTo(0, y);
   }));
   app.querySelectorAll(".rq [data-r]").forEach(b => b.addEventListener("click", () => { CFG.risk = Number(b.dataset.r); saveCfg(); const y = scrollY; route(); scrollTo(0, y); }));
   $("#jrest")?.addEventListener("change", e => { CFG.rest = e.target.value; saveCfg(); const y = scrollY; route(); scrollTo(0, y); });
