@@ -75,6 +75,8 @@ async function j(url) { const r = await fetch(url); if (!r.ok) throw new Error(u
 async function load() {
   const [dash, meta, cal] = await Promise.all([j("data/dash.json"), j("data/meta.json"), j("data/calendar.json").catch(() => null)]);
   D = dash; META = meta; DATES = D.dates; LAST = DATES.length - 1; RU = D.rules;
+  // Signale, die erst mehr als RU.late Handelstage zu spät in den Daten standen, werden nicht gehandelt (research/pubdate.py)
+  D.late = D.signals.filter(s => s.late); D.signals = D.signals.filter(s => !s.late);
   CAL = cal && cal.spy && cal.dates.length === DATES.length ? cal.spy : null;
   $("#stand").textContent = `Kurse bis ${dDE(D.asof)} · täglich aktualisiert`;
 }
@@ -211,11 +213,13 @@ function viewMain(app) {
 
   <h3 class="sec">Jetzt offen <small>${open.length ? `${open.length} Signal${open.length === 1 ? "" : "e"}` : ""}</small></h3>
   ${open.length ? `<div class="cards">${open.map(card).join("")}</div>` : `<div class="panel empty">Gerade kein offenes Dip-Cluster. Neue Signale kommen per E-Mail (GitHub-Benachrichtigung).</div>`}
+  ${latePanel()}
   ${livePanel()}
 
   <div class="panel" style="padding:14px 16px"><h2 style="font:600 15px/1.2 var(--f-body);margin:0 0 8px">So wird getradet</h2>
     <ol class="rules">
       <li><b>Signal kommt</b> per E-Mail, Discord oder steht oben bei „Jetzt offen“.</li>
+      <li><b>Nur pünktliche Signale:</b> Steht ein Signal erst mehr als ${RU.late || 5} Handelstage nach der Meldung in den Daten, wird es ausgelassen, weil der Dip dann meist schon vorbei ist. Diese Signale sind weder im Backtest noch im Journal enthalten.</li>
       <li><b>Kurz prüfen (5 Min.):</b> Der Vor-Check (Ampel) auf der Karte hilft dabei. Warum ist die Aktie gefallen? Bei Betrugsverdacht, Insolvenzgefahr oder Delisting nicht kaufen. Kurs über 5 $, Börsenwert über ca. 2 Mrd. $. Ist sie seit dem Signal schon über 10–15 % gestiegen, auslassen.</li>
       <li><b>Kaufen</b> am nächsten Handelstag zum Schlusskurs, <b>${nf1.format(posPct())} % des Kontos</b> je Trade (= ${nf1.format(CFG.risk)} % Risiko bei ${CFG.stop} % Stop), höchstens ${CFG.max} Trades gleichzeitig und höchstens ${CFG.sec} aus derselben Branche. <a href="#journal">Ändern im Journal</a></li>
       <li><b>Notfall-Stop −${CFG.stop} %</b> auf Schlusskurs-Basis, kein enger Stop.</li>
@@ -224,7 +228,7 @@ function viewMain(app) {
       <li><b>Jeden Trade notieren.</b> Nach 20–30 Trades prüfen: Schlagen weniger als die Hälfte den S&amp;P, aufhören.</li>
     </ol></div>
 
-  <h3 class="sec">Backtest seit 2020 <small>${RU.days} Tage halten · gemessen ab Veröffentlichung</small></h3>
+  <h3 class="sec">Backtest seit 2020 <small>${RU.days} Tage halten · Einstieg ab Erscheinen in den Daten · verspätete ausgelassen</small></h3>
   <div class="verdict">${st.n ? `<b>${q(st.beat)}</b> der ${nf0.format(st.n)} Dip-Cluster schlugen den S&amp;P 500 in den 30 Tagen danach, im Schnitt um <b class="${cls(st.ex)}">${pct(st.ex)}</b> (Median ${pct(st.med)}). Zum Vergleich: alle Cluster ohne Dip-Filter nur ${q(cmp.ohne_dip.beat)} (Ø ${pct(cmp.ohne_dip.ex)}).` : "Noch keine abgeschlossenen Signale."}</div>
   <div class="tiles">
     <div class="tile"><div class="k">Schlägt den S&amp;P</div><div class="v">${q(st.beat)}</div><div class="d">im Plus: ${q(st.hit)}</div></div>
@@ -291,6 +295,12 @@ const AMPL = { g: "grün", y: "gelb", r: "rot" };
 function ampel(s) {
   const c = s.chk; if (!c) return "";
   return `<div class="amp ${c.lvl}"><b>Vor-Check: ${AMPL[c.lvl]}</b>${c.why.length ? `<ul>${c.why.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : `<span> · Börsenwert, Handel und Zahlen-Termin ok</span>`}</div>`;
+}
+function latePanel() {
+  const from = DATES[Math.max(0, LAST - 42)], L = (D.late || []).filter(s => (s.seen || s.d) >= from);
+  if (!L.length) return "";
+  return `<div class="panel" style="padding:12px 16px"><b>Zu spät gemeldet, ausgelassen</b> <small class="mut">letzte 2 Monate</small>
+    <p class="hint" style="margin:6px 0 0">${L.map(s => `${tickLink(s.t)} <span class="mut">gemeldet ${dS(s.d)}, in den Daten erst ${dS(s.seen)} (${s.late} Handelstage zu spät)</span>`).join(" · ")}</p></div>`;
 }
 function livePanel() {
   const LV = RU.live; if (!LV) return "";
@@ -396,7 +406,7 @@ function viewJournal(app, mode) {
   <div class="grid2">
     <div class="panel"><div class="panel-h"><h2>Nach Jahr</h2></div><div class="tbl-wrap"><table><thead><tr><th>Jahr</th><th class="n">Konto</th><th class="n">S&amp;P</th><th class="n">Max. Rückgang</th><th class="n">Trades</th><th class="n">Treffer</th><th class="n">Kontostand</th></tr></thead>
     <tbody>${J.years.map(y => `<tr><td class="num">${y.y}</td><td class="n"><b class="${cls(y.ret)}">${pct(y.ret)}</b></td><td class="n mut">${pct(y.sp)}</td><td class="n neg">${pct(y.mdd)}</td><td class="n">${y.n}</td><td class="n">${q(y.win)}</td><td class="n">${money(y.endv)}</td></tr>`).join("")}</tbody></table></div></div>
-    <div class="note"><b>So liest du das:</b> <b>R</b> = Ergebnis geteilt durch das Risiko (−1 R = Stop getroffen). <b>Max. im Minus</b> = tiefster Schlusskurs während des Trades, also wie weh er zwischendurch tat. <b>Konto-DD</b> = wie weit das ganze Konto unter seinem Höchststand lag, während der Trade lief. <b>Ausgelassen</b> = Signal kam, als schon ${CFG.max} Trades (oder ${CFG.sec} aus derselben Branche) offen waren oder kein Cash frei war.<br><br>Kurse sind Schlusskurse, der Stop greift auf Schlusskurs-Basis (im echten Handel kann ein Kurs auch darunter öffnen). Keine Anlageberatung.</div>
+    <div class="note"><b>So liest du das:</b> <b>R</b> = Ergebnis geteilt durch das Risiko (−1 R = Stop getroffen). <b>Max. im Minus</b> = tiefster Schlusskurs während des Trades, also wie weh er zwischendurch tat. <b>Konto-DD</b> = wie weit das ganze Konto unter seinem Höchststand lag, während der Trade lief. <b>Ausgelassen</b> = Signal kam, als schon ${CFG.max} Trades (oder ${CFG.sec} aus derselben Branche) offen waren oder kein Cash frei war.<br><br>Signale, die mehr als ${RU.late || 5} Handelstage zu spät in den Daten standen, sind gar nicht enthalten.<br><br>Kurse sind Schlusskurse, der Stop greift auf Schlusskurs-Basis (im echten Handel kann ein Kurs auch darunter öffnen). Keine Anlageberatung.</div>
   </div>`;
 
   app.querySelectorAll(".jset input").forEach(inp => inp.addEventListener("change", () => {
