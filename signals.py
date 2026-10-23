@@ -32,6 +32,7 @@ STEP = 5
 NOISE = re.compile(r"reinvest|dividend", re.I)
 BIG = 100000       # ein Politiker reicht ab diesem Betrag (Untergrenze der Meldespanne)
 LIVE_START = "2026-10-16"   # ab hier zählt die Live-Bilanz (alles davor ist Backtest)
+LATE = 5           # Signal erst mehr als so viele Handelstage nach dem geplanten Einstieg in den Daten -> auslassen (research/pubdate.py)
 SEC_CAP = 2        # höchstens so viele offene Trades aus derselben Branche (research/sector.py)
 SEC_DE = {"Technology": "Technologie", "Healthcare": "Gesundheit", "Consumer Cyclical": "Zyklischer Konsum",
           "Consumer Defensive": "Basiskonsum", "Financial Services": "Finanzen", "Industrials": "Industrie",
@@ -100,10 +101,12 @@ def _bcurve(col, i0):
     return v
 
 
-def build(members, rows, dates, px, bench="SPY", ins=None, first_seen=None):
-    """first_seen: {"TICKER|Meldedatum": Datum, an dem das Signal zum ersten Mal in unseren Daten stand}. Für Live-Signale
-    (ab LIVE_START) wird der Einstieg auf den Schlusskurs NACH diesem Tag gelegt – so wie man es wirklich handeln kann."""
-    ins, first_seen = ins or {}, first_seen or {}
+def build(members, rows, dates, px, bench="SPY", ins=None, avail=None):
+    """avail(row): Tag, an dem der Trade zum ersten Mal in der Datenquelle stand (pubhist.py). Ein Signal ist bekannt, sobald
+    genug Käufe davon in den Daten stehen; Einstieg zum Schlusskurs NACH diesem Tag – so wie man es wirklich handeln kann.
+    Kommt das Signal mehr als LATE Handelstage zu spät, wird es als "late" markiert und nicht gehandelt."""
+    ins = ins or {}
+    avail = avail or (lambda r: r["filed"])
     n = len(dates)
     last = n - 1
     cols = {c: px[c].values for c in px.columns}
@@ -152,15 +155,31 @@ def build(members, rows, dates, px, bench="SPY", ins=None, first_seen=None):
                 last_all = pos
             if dip_ok:
                 last_sig = pos
-            fs = first_seen.get(f"{tk}|{d}") if d >= LIVE_START else None
-            if fs:
-                k2 = bisect.bisect_right(dates, fs)          # erster Handelstag nach dem Tag, an dem wir es sehen konnten
-                if i is None or k2 > i:
+            # Wann war das Signal wirklich sichtbar? (2. Käufer bzw. der große Kauf steht in den Daten)
+            fb = {}
+            for u in w:
+                if u["side"] == "P":
+                    a = avail(u)
+                    fb[u["m"]] = min(fb.get(u["m"], "9999"), a)
+            av = sorted(fb.values())
+            cands = [av[MIN_N - 1]] if len(av) >= MIN_N else []
+            bigs = [avail(u) for u in w if u["side"] == "P" and (u["lo"] or 0) >= BIG]
+            if bigs:
+                cands.append(min(bigs))
+            fs = max(min(cands) if cands else d, d)
+            late = 0
+            if fs > d:
+                k2 = bisect.bisect_right(dates, fs)          # erster Handelstag nach dem Tag, an dem man es sehen konnte
+                if k2 - pos > LATE:
+                    late = k2 - pos
+                if k2 > pos:
                     i = k2 if k2 < n else None
             rec = {"t": tk, "d": d, "i": i, "n": len(b), "o": len(s), "m": sorted(b), "fh": fh,
                    "vol": round(sum(((u["lo"] or 0) + (u["hi"] or u["lo"] or 0)) / 2 for u in w if u["side"] == "P"))}
-            if fs and fs > d:
+            if fs > d:
                 rec["seen"] = fs
+            if late:
+                rec["late"] = late
             if ni:
                 rec["ins"] = 1
             if big >= BIG and len(b) + ni < MIN_N:
@@ -194,7 +213,8 @@ def build(members, rows, dates, px, bench="SPY", ins=None, first_seen=None):
         return {"n": len(d), "beat": round(100 * sum(v > 0 for v in e) / len(e)), "ex": round(sum(e) / len(e), 2),
                 "med": round(e[len(e) // 2], 2)}
 
-    curve = _curve([(s["t"], s["i"], min(s["i"] + HOLD, last)) for s in sig if s["i"] is not None], cols, spy, n, i0)
+    ok = [s for s in sig if not s.get("late")]
+    curve = _curve([(s["t"], s["i"], min(s["i"] + HOLD, last)) for s in ok if s["i"] is not None], cols, spy, n, i0)
     used_m = {m for s in sig for m in s["m"]}
     used_t = {s["t"] for s in sig}
     asset = {}
@@ -209,10 +229,10 @@ def build(members, rows, dates, px, bench="SPY", ins=None, first_seen=None):
     return {
         "asof": dates[-1], "dates": dates, "curveDates": cd,
         "rules": {"hold": HOLD, "days": 30, "win": WIN, "min_n": MIN_N, "dip": DIP, "cooldown": COOLDOWN,
-                  "stop": STOP, "target": TARGET, "size": SIZE, "big": BIG, "live": LIVE_START},
+                  "stop": STOP, "target": TARGET, "size": SIZE, "big": BIG, "live": LIVE_START, "late": LATE},
         "signals": sig, "curve": curve,
         "bench": {"SPY": _bcurve(spy, i0), "QQQ": _bcurve(qqq, i0) if qqq is not None else None},
-        "compare": {"dip": stats(sig), "alle": stats(allc), "ohne_dip": stats([x for x in allc if x not in sig])},
+        "compare": {"dip": stats(ok), "alle": stats(allc), "ohne_dip": stats([x for x in allc if x not in sig])},
         "members": mem, "tickers": {t: {"a": asset.get(t, "")} for t in sorted(used_t)},
     }
 
@@ -381,21 +401,16 @@ def _embed_signal(s, nm, site_url):
 
 def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", site_url="", *_, **__):
     # Wann stand ein Signal zum ersten Mal in unseren Daten? (Nachlieferungen der Quelle sonst unsichtbar)
-    fs_file = os.path.join(cache_dir, "first_seen.json")
-    seen_at = json.load(open(fs_file)) if os.path.exists(fs_file) else {}
-    D = build(members, rows, dates, px, bench, first_seen=seen_at)
-    fresh = {f'{s["t"]}|{s["d"]}' for s in D["signals"]} - set(seen_at)
-    if fresh:
-        for k in fresh:
-            seen_at[k] = dates[-1]
-        json.dump(seen_at, open(fs_file, "w"))
-        if any(k.split("|")[1] >= LIVE_START for k in fresh):
-            D = build(members, rows, dates, px, bench, first_seen=seen_at)
+    import pubhist
+    from update import yf_symbol
+    H = pubhist.update(cache_dir, log=lambda *a: print(*a, flush=True))
+    D = build(members, rows, dates, px, bench, avail=pubhist.avail_fn(H, members, yf_symbol))
+    D["rules"]["pub_until"] = H.get("hdate")
     extra = write_ticker_trades(out_dir, members, rows, set(D["tickers"]))
     for i, v in extra.items():
         D["members"].setdefault(i, v)
     last = len(dates) - 1
-    open_sigs = [s for s in D["signals"] if s.get("i") is None or s["i"] + HOLD > last]
+    open_sigs = [s for s in D["signals"] if (s.get("i") is None or s["i"] + HOLD > last) and not s.get("late")]
     vorcheck(open_sigs, dates)
     D["sec"] = sectors(cache_dir, sorted({s["t"] for s in D["signals"]}))
     D["rules"]["sec"] = SEC_CAP
@@ -411,7 +426,9 @@ def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", sit
     recent = (date.fromisoformat(dates[-1]) - timedelta(days=7)).isoformat()
     nm = lambda i: D["members"].get(i, {}).get("name", "?")
     key = lambda s: f'D|{s["t"]}|{s["d"]}'
-    new = [s for s in D["signals"] if key(s) not in seen and s["d"] >= recent]
+    fresh = [s for s in D["signals"] if key(s) not in seen and s.get("seen", s["d"]) >= recent]
+    new = [s for s in fresh if not s.get("late")]
+    new_late = [s for s in fresh if s.get("late")]
     seen |= {key(s) for s in D["signals"]}
 
     # Discord: neue Signale, Verkaufstag, Stop – nur wenn das Secret DISCORD_WEBHOOK gesetzt ist
@@ -431,6 +448,9 @@ def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", sit
                     s["secfull"] = len(busy)
         for k in range(0, len(new), 10):
             msgs.append({"embeds": [_embed_signal(s, nm, site_url) for s in new[k:k + 10]]})
+        if new_late:
+            msgs.append({"content": "**Zu spät gemeldet – laut Regel auslassen:** " + ", ".join(
+                f'{s["t"]} (gemeldet {s["d"]}, in den Daten erst {s["seen"]}, {s["late"]} Handelstage zu spät)' for s in new_late[:15])})
         for s in open_sigs:
             if s.get("i") is None or not s.get("ep") or not s.get("lp"):
                 continue
@@ -439,7 +459,7 @@ def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", sit
                 msgs.append({"content": f'**Stop erreicht: {s["t"]}** – Schlusskurs {s["lp"]} $ ({r:+.1f} % seit Einstieg {s["ep"]} $). Laut Regel verkaufen.'})
                 seen.add(f'S|{s["t"]}|{s["d"]}')
         for s in D["signals"]:
-            if s.get("i") is not None and s["i"] + HOLD - 1 == last and f'X|{s["t"]}|{s["d"]}' not in seen:
+            if not s.get("late") and s.get("i") is not None and s["i"] + HOLD - 1 == last and f'X|{s["t"]}|{s["d"]}' not in seen:
                 r = (s["lp"] / s["ep"] - 1) * 100 if s.get("ep") and s.get("lp") else None
                 msgs.append({"content": f'**Morgen verkaufen: {s["t"]}** – 30 Tage sind morgen voll (Verkauf zum Schlusskurs). '
                                         f'Stand: {"%+.1f %%" % r if r is not None else "–"} seit Einstieg.'})
