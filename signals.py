@@ -32,6 +32,11 @@ STEP = 5
 NOISE = re.compile(r"reinvest|dividend", re.I)
 BIG = 100000       # ein Politiker reicht ab diesem Betrag (Untergrenze der Meldespanne)
 LIVE_START = "2026-10-16"   # ab hier zählt die Live-Bilanz (alles davor ist Backtest)
+SEC_CAP = 2        # höchstens so viele offene Trades aus derselben Branche (research/sector.py)
+SEC_DE = {"Technology": "Technologie", "Healthcare": "Gesundheit", "Consumer Cyclical": "Zyklischer Konsum",
+          "Consumer Defensive": "Basiskonsum", "Financial Services": "Finanzen", "Industrials": "Industrie",
+          "Energy": "Energie", "Communication Services": "Kommunikation", "Basic Materials": "Rohstoffe",
+          "Real Estate": "Immobilien", "Utilities": "Versorger"}
 
 
 def _r(col, i, j):
@@ -313,6 +318,39 @@ def discord(webhook, payloads):
             print("Discord-Fehler:", type(e).__name__, str(e)[:120], flush=True)
 
 
+def sectors(cache_dir, tickers, limit=400):
+    """Branche (Yahoo-Sektor) je Ticker, gemerkt in cache/sector_map.json. Fehlschläge erst nach 30 Tagen neu versuchen."""
+    import time as _t
+    f = os.path.join(cache_dir, "sector_map.json")
+    try:
+        J = json.load(open(f))
+    except Exception:  # noqa
+        J = {}
+    S, F = J.get("s", {}), J.get("f", {})
+    today = date.today()
+    old = (today - timedelta(days=30)).isoformat()
+    todo = [t for t in tickers if t not in S and F.get(t, "") < old][:limit]
+    if todo:
+        try:
+            import yfinance as yf
+        except Exception:  # noqa
+            todo = []
+        for t in todo:
+            try:
+                sec = (yf.Ticker(t).get_info() or {}).get("sector")
+            except Exception:  # noqa
+                sec = None
+            if sec:
+                S[t] = sec
+                F.pop(t, None)
+            else:
+                F[t] = today.isoformat()
+            _t.sleep(0.2)
+        json.dump({"s": S, "f": F}, open(f, "w"))
+        print(f"Branchen: {len(todo)} abgefragt, {len(S)} bekannt", flush=True)
+    return {t: S[t] for t in tickers if t in S}
+
+
 AMP = {"g": ("GRÜN", 0x2EA043), "y": ("GELB", 0xD29922), "r": ("ROT", 0xDA3633)}
 
 
@@ -328,7 +366,11 @@ def _embed_signal(s, nm, site_url):
          {"name": f"Stop ({STOP} %)", "value": f"{stop} $" if stop else "–", "inline": True},
          {"name": "Kauf", "value": "zum nächsten Schlusskurs" if s.get("i") is None else f'Schluss {s.get("ep")} $', "inline": True},
          {"name": "Verkauf ca.", "value": c.get("exit", "–"), "inline": True},
+         {"name": "Branche", "value": SEC_DE.get(s.get("sec"), s.get("sec") or "unbekannt"), "inline": True},
          {"name": f"Vor-Check: {AMP[lvl][0]}", "value": "\n".join("• " + w for w in c.get("why", [])) or "• alles ok", "inline": False}]
+    if s.get("secfull"):
+        f.append({"name": "⚠ Branchenlimit", "value": f'Schon {s["secfull"]} offene Trades aus {SEC_DE.get(s["sec"], s["sec"])} '
+                                                     f'– laut Regel (max. {SEC_CAP} pro Branche) auslassen.', "inline": False})
     e = {"title": f'Neues Dip-Signal: {s["t"]}' + (f' ({c["name"]})' if c.get("name") else ""),
          "color": AMP[lvl][1], "fields": f,
          "footer": {"text": f'Gemeldet {s["d"]} · Positionsgröße laut Journal · keine Anlageberatung'}}
@@ -355,6 +397,8 @@ def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", sit
     last = len(dates) - 1
     open_sigs = [s for s in D["signals"] if s.get("i") is None or s["i"] + HOLD > last]
     vorcheck(open_sigs, dates)
+    D["sec"] = sectors(cache_dir, sorted({s["t"] for s in D["signals"]}))
+    D["rules"]["sec"] = SEC_CAP
     json.dump(D, open(os.path.join(out_dir, "dash.json"), "w"), separators=(",", ":"), ensure_ascii=False)
 
     # ------------------------------------------------------------------ Benachrichtigung (GitHub Issue → E-Mail)
@@ -378,6 +422,13 @@ def write_signals(out_dir, cache_dir, members, rows, dates, px, bench="SPY", sit
             op = ", ".join(f'{s["t"]} ({s.get("chk", {}).get("lvl", "?").upper()})' for s in open_sigs) or "keine"
             msgs.append({"content": f"**Capitol Signals ist verbunden.** Neue Dip-Signale, Verkaufstage und Stops kommen ab jetzt hier rein.\nGerade offen: {op}\n{site_url}"})
             seen.add("discord_ok")
+        for s in new:
+            sc = D["sec"].get(s["t"])
+            if sc:
+                s["sec"] = sc
+                busy = [o for o in open_sigs if o is not s and D["sec"].get(o["t"]) == sc and o["d"] <= s["d"]]
+                if len(busy) >= SEC_CAP:
+                    s["secfull"] = len(busy)
         for k in range(0, len(new), 10):
             msgs.append({"embeds": [_embed_signal(s, nm, site_url) for s in new[k:k + 10]]})
         for s in open_sigs:
