@@ -208,25 +208,12 @@ function viewMain(app) {
   const cmp = D.compare;
   app.innerHTML = `
   <div class="view-head"><div><div class="eyebrow">Strategie</div><h1>Dip-Cluster</h1>
-    <p>Mindestens ${RU.min_n} Politiker kaufen innerhalb von ${RU.win} Tagen dieselbe Aktie (oder ein einzelner Politiker kauft für ${money(RU.big || 100000)} oder mehr), die ${-RU.dip} % oder mehr unter ihrem 52-Wochen-Hoch steht. Kaufen zum Schlusskurs nach der Meldung, nach ${RU.days} Tagen verkaufen.</p></div>
-    <label class="ctl"><span>Dein Konto (für Positionsgröße)</span><input type="number" id="depot" min="0" step="1000" placeholder="z. B. 10000" value="${CFG.cap || ""}" style="width:160px"></label></div>
+    <p>Mindestens ${RU.min_n} Politiker kaufen innerhalb von ${RU.win} Tagen dieselbe Aktie (oder ein einzelner Politiker kauft für ${money(RU.big || 100000)} oder mehr), die ${-RU.dip} % oder mehr unter ihrem 52-Wochen-Hoch steht. Kaufen zum Schlusskurs nach der Meldung, nach ${RU.days} Tagen verkaufen.</p></div></div>
 
   <h3 class="sec">Jetzt offen <small>${open.length ? `${open.length} Signal${open.length === 1 ? "" : "e"}` : ""}</small></h3>
-  ${open.length ? `<div class="cards">${open.map(card).join("")}</div>` : `<div class="panel empty">Gerade kein offenes Dip-Cluster. Neue Signale kommen per E-Mail (GitHub-Benachrichtigung).</div>`}
+  ${open.length ? `<div class="cards">${open.map(card).join("")}</div>` : `<div class="panel empty">Gerade kein offenes Dip-Cluster. Neue Signale kommen per Discord.</div>`}
   ${latePanel()}
   ${livePanel()}
-
-  <div class="panel" style="padding:14px 16px"><h2 style="font:600 15px/1.2 var(--f-body);margin:0 0 8px">So wird getradet</h2>
-    <ol class="rules">
-      <li><b>Signal kommt</b> per E-Mail, Discord oder steht oben bei „Jetzt offen“.</li>
-      <li><b>Nur pünktliche Signale:</b> Steht ein Signal erst mehr als ${RU.late || 5} Handelstage nach der Meldung in den Daten, wird es ausgelassen, weil der Dip dann meist schon vorbei ist. Diese Signale sind weder im Backtest noch im Journal enthalten.</li>
-      <li><b>Kurz prüfen (5 Min.):</b> Der Vor-Check (Ampel) auf der Karte hilft dabei. Warum ist die Aktie gefallen? Bei Betrugsverdacht, Insolvenzgefahr oder Delisting nicht kaufen. Kurs über 5 $, Börsenwert über ca. 2 Mrd. $. Ist sie seit dem Signal schon über 10–15 % gestiegen, auslassen.</li>
-      <li><b>Kaufen</b> am nächsten Handelstag zum Schlusskurs, <b>${nf1.format(posPct())} % des Kontos</b> je Trade (= ${nf1.format(CFG.risk)} % Risiko bei ${CFG.stop} % Stop), höchstens ${CFG.max} Trades gleichzeitig und höchstens ${CFG.sec} aus derselben Branche. <a href="#journal">Ändern im Journal</a></li>
-      <li><b>Notfall-Stop −${CFG.stop} %</b> auf Schlusskurs-Basis, kein enger Stop.</li>
-      <li><b>Freies Geld:</b> ${restTxt()}${CFG.rest === "ma" && CAL ? ` Heute: S&amp;P ${CAL[LAST] > spyMA(CFG.ma)[LAST] ? "<b class=\"pos\">über</b> dem Durchschnitt → investiert" : "<b class=\"neg\">unter</b> dem Durchschnitt → Cash"}.` : ""}</li>
-      <li><b>Nach ${RU.days} Tagen verkaufen</b>, egal wie der Trade steht.</li>
-      <li><b>Jeden Trade notieren.</b> Nach 20–30 Trades prüfen: Schlagen weniger als die Hälfte den S&amp;P, aufhören.</li>
-    </ol></div>
 
   <h3 class="sec">Backtest seit 2020 <small>${RU.days} Tage halten · Einstieg ab Erscheinen in den Daten · verspätete ausgelassen</small></h3>
   <div class="verdict">${st.n ? `<b>${q(st.beat)}</b> der ${nf0.format(st.n)} Dip-Cluster schlugen den S&amp;P 500 in den 30 Tagen danach, im Schnitt um <b class="${cls(st.ex)}">${pct(st.ex)}</b> (Median ${pct(st.med)}). Zum Vergleich: alle Cluster ohne Dip-Filter nur ${q(cmp.ohne_dip.beat)} (Ø ${pct(cmp.ohne_dip.ex)}).` : "Noch keine abgeschlossenen Signale."}</div>
@@ -239,13 +226,8 @@ function viewMain(app) {
   </div>
   <div class="panel"><div class="panel-h"><h2>Konto nach den Regeln</h2><div class="legend-row"><span><span class="sw" style="background:var(--accent)"></span>Dip-Cluster</span><span><span class="sw" style="background:var(--chart-spy)"></span>S&amp;P 500 gehalten</span><a class="btn primary" href="#journal">Journal öffnen →</a></div></div>
     <div class="panel-b"><div class="chart sm" id="eq"></div><p class="hint" style="margin:8px 0 0">Simulation ab 2020 mit ${money(CFG.cap)}: nur die Dip-Cluster-Trades, ${nf1.format(posPct())} % des Kontos je Trade, höchstens ${CFG.max} gleichzeitig und ${CFG.sec} pro Branche, Stop −${CFG.stop} %, Verkauf nach ${RU.days} Tagen. ${restTxt()} Ohne Gebühren und Steuern. Jeden einzelnen Trade siehst du im Journal.</p></div></div>
-  <div class="grid2">
-    <div class="panel"><div class="panel-h"><h2>Nach Jahr</h2></div><div class="tbl-wrap"><table><thead><tr><th>Jahr</th><th class="n">Signale</th><th class="n">schlägt S&amp;P</th><th class="n">Ø vs S&amp;P</th></tr></thead><tbody>${st.years.map(y => `<tr><td class="num">${y.y}</td><td class="n">${y.n}</td><td class="n">${q(y.beat)}</td><td class="n">${pc(y.ex)}</td></tr>`).join("")}</tbody></table></div></div>
-    <div class="note"><b>Ehrlich:</b> Nur rund 15 Signale pro Jahr. Ein großer Teil der Gewinne kam nach Markt-Crashs (2020, April 2025). In ruhigen Märkten gibt es weniger und schwächere Signale. Getestet wurden auch normale Cluster, Ausschuss-Käufe, Top-Politiker, Firmen-Insider, technische Filter sowie Haltedauern von 60 und 90 Tagen: Nichts davon schlug den S&amp;P verlässlich, deshalb ist es nicht mehr auf der Seite. Keine Anlageberatung.</div>
-  </div>
+  <div class="panel"><div class="panel-h"><h2>Nach Jahr</h2></div><div class="tbl-wrap"><table><thead><tr><th>Jahr</th><th class="n">Signale</th><th class="n">schlägt S&amp;P</th><th class="n">Ø vs S&amp;P</th></tr></thead><tbody>${st.years.map(y => `<tr><td class="num">${y.y}</td><td class="n">${y.n}</td><td class="n">${q(y.beat)}</td><td class="n">${pc(y.ex)}</td></tr>`).join("")}</tbody></table></div></div>
   ${pastTable()}`;
-  const dep = $("#depot");
-  dep.addEventListener("change", () => { const v = Number(dep.value); if (v > 0) { CFG.cap = v; saveCfg(); } const y = scrollY; route(); scrollTo(0, y); });
   app.querySelectorAll("tr[data-t]").forEach(tr => tr.addEventListener("click", e => { if (!e.target.closest("a")) location.hash = "t." + encodeURIComponent(tr.dataset.t); }));
   app.querySelector("[data-more]")?.addEventListener("click", () => { S.show += 50; const y = scrollY; route(); scrollTo(0, y); });
   drawEq(J);
@@ -299,8 +281,8 @@ function ampel(s) {
 function latePanel() {
   const from = DATES[Math.max(0, LAST - 42)], L = (D.late || []).filter(s => (s.seen || s.d) >= from);
   if (!L.length) return "";
-  return `<div class="panel" style="padding:12px 16px"><b>Zu spät gemeldet, ausgelassen</b> <small class="mut">letzte 2 Monate</small>
-    <p class="hint" style="margin:6px 0 0">${L.map(s => `${tickLink(s.t)} <span class="mut">gemeldet ${dS(s.d)}, in den Daten erst ${dS(s.seen)} (${s.late} Handelstage zu spät)</span>`).join(" · ")}</p></div>`;
+  return `<details class="panel late"><summary><b>Zu spät gemeldet, ausgelassen</b> <small class="mut">${L.length} in den letzten 2 Monaten · anzeigen</small></summary>
+    <p class="hint" style="margin:8px 0 0">${L.map(s => `${tickLink(s.t)} <span class="mut">gemeldet ${dS(s.d)}, in den Daten erst ${dS(s.seen)} (${s.late} Handelstage zu spät)</span>`).join(" · ")}</p></details>`;
 }
 function livePanel() {
   const LV = RU.live; if (!LV) return "";
