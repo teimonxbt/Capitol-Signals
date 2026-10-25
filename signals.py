@@ -270,6 +270,71 @@ def _exit_date(dates, i):
     return d.isoformat()
 
 
+NQ_HDR = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+          "Accept": "application/json, text/plain, */*", "Origin": "https://www.nasdaq.com", "Referer": "https://www.nasdaq.com/"}
+NQ_SEC = {"Technology": "Technology", "Health Care": "Healthcare", "Consumer Discretionary": "Consumer Cyclical",
+          "Consumer Staples": "Consumer Defensive", "Finance": "Financial Services", "Industrials": "Industrials",
+          "Energy": "Energy", "Telecommunications": "Communication Services", "Basic Materials": "Basic Materials",
+          "Real Estate": "Real Estate", "Utilities": "Utilities"}
+
+
+def _num(v):
+    try:
+        return float(str(v).replace("$", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _nasdaq_info(sym):
+    """Ersatzquelle, wenn Yahoo blockt: Börsenwert, Ø-Volumen, Branche und Zahlen-Termin von api.nasdaq.com."""
+    import requests
+    q = sym.replace("-", ".")
+    out = {}
+    for cls in ("stocks", "etf"):
+        try:
+            r = requests.get(f"https://api.nasdaq.com/api/quote/{q}/summary", params={"assetclass": cls}, headers=NQ_HDR, timeout=20)
+            sd = ((r.json() or {}).get("data") or {}).get("summaryData") or {}
+        except Exception:  # noqa
+            sd = {}
+        if sd:
+            g = lambda k: (sd.get(k) or {}).get("value")
+            out = {"marketCap": _num(g("MarketCap")), "averageVolume": _num(g("AverageVolume")),
+                   "sector": NQ_SEC.get(g("Sector") or "")}
+            break
+    try:
+        r = requests.get(f"https://api.nasdaq.com/api/analyst/{q}/earnings-date", headers=NQ_HDR, timeout=20)
+        txt = ((r.json() or {}).get("data") or {}).get("announcement") or ""
+        m = re.search(r"([A-Z][a-z]{2}) (\d{1,2}), (\d{4})", txt)
+        if m:
+            from datetime import datetime
+            out["earn"] = datetime.strptime(" ".join(m.groups()), "%b %d %Y").date().isoformat()
+    except Exception:  # noqa
+        pass
+    return out
+
+
+def _yahoo_info(yf, sym):
+    """Yahoo-Firmendaten mit einem zweiten Versuch (Yahoo lehnt manchmal mit 'Invalid Crumb' ab)."""
+    import time as _t
+    for k in range(2):
+        try:
+            tk = yf.Ticker(sym)
+            info = tk.get_info() or {}
+            if info.get("marketCap") or info.get("averageVolume"):
+                earn = None
+                try:
+                    cal = tk.calendar or {}
+                    ed = cal.get("Earnings Date") if isinstance(cal, dict) else None
+                    earn = str(ed[0])[:10] if ed else None
+                except Exception:  # noqa
+                    pass
+                return info, earn
+        except Exception:  # noqa
+            pass
+        _t.sleep(2 + 3 * k)
+    return {}, None
+
+
 def vorcheck(sigs, dates):
     """Holt Börsenwert, Handelsvolumen und Termin der Quartalszahlen (Yahoo) und bewertet jedes offene Signal:
     grün = ok, gelb = genauer hinschauen, rot = eher auslassen. Die Schwellen sind Vorsichts-Regeln, nicht getestet."""
@@ -277,20 +342,23 @@ def vorcheck(sigs, dates):
         import yfinance as yf
     except Exception:  # noqa
         yf = None
+    src = {"Yahoo": 0, "Nasdaq": 0, "keine": 0}
     for s in sigs:
-        info, earn = {}, None
-        if yf is not None:
-            try:
-                tk = yf.Ticker(s["t"])
-                info = tk.get_info() or {}
-                cal = tk.calendar or {}
-                ed = cal.get("Earnings Date") if isinstance(cal, dict) else None
-                if ed:
-                    earn = str(ed[0])[:10]
-            except Exception as e:  # noqa
-                print("Vor-Check", s["t"], type(e).__name__, str(e)[:80], flush=True)
+        info, earn = _yahoo_info(yf, s["t"]) if yf is not None else ({}, None)
         cap = info.get("marketCap")
         vol = info.get("averageDailyVolume10Day") or info.get("averageVolume")
+        if cap or vol:
+            src["Yahoo"] += 1
+        if not cap or not vol or not earn:          # Lücken mit Nasdaq füllen
+            nq = _nasdaq_info(s["t"])
+            if nq.get("marketCap") or nq.get("averageVolume"):
+                if not (cap or vol):
+                    src["Nasdaq"] += 1
+                cap = cap or nq.get("marketCap")
+                vol = vol or nq.get("averageVolume")
+            earn = earn or nq.get("earn")
+        if not (cap or vol):
+            src["keine"] += 1
         lp = s.get("lp")
         adv = vol * lp if vol and lp else None
         ex = _exit_date(dates, s.get("i"))
@@ -319,6 +387,7 @@ def vorcheck(sigs, dates):
             yel.append(f"seit Einstieg schon +{run:.0f} %")
         s["chk"] = {"lvl": "r" if red else "y" if yel else "g", "why": red + yel, "cap": cap, "adv": round(adv) if adv else None,
                     "earn": earn, "exit": ex, "name": info.get("shortName")}
+    print("Vor-Check Datenquellen:", src, flush=True)
 
 
 # ====================================================================== Discord
@@ -360,6 +429,8 @@ def sectors(cache_dir, tickers, limit=400):
                 sec = (yf.Ticker(t).get_info() or {}).get("sector")
             except Exception:  # noqa
                 sec = None
+            if not sec:
+                sec = _nasdaq_info(t).get("sector")
             if sec:
                 S[t] = sec
                 F.pop(t, None)
