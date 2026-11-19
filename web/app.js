@@ -203,7 +203,7 @@ function sim() {
 // ================================================================== Hauptseite
 function viewMain(app) {
   const open = D.signals.filter(s => status(s).open);
-  const st = stats(D.signals);
+  const st = stats(D.signals.map(withStop));
   const J = sim();
   const cmp = D.compare;
   app.innerHTML = `
@@ -284,10 +284,20 @@ function latePanel() {
   return `<details class="panel late"><summary><b>Zu spät gemeldet, ausgelassen</b> <small class="mut">${L.length} in den letzten 2 Monaten · anzeigen</small></summary>
     <p class="hint" style="margin:8px 0 0">${L.map(s => `${tickLink(s.t)} <span class="mut">gemeldet ${dS(s.d)}, in den Daten erst ${dS(s.seen)} (${s.late} Handelstage zu spät)</span>`).join(" · ")}</p></details>`;
 }
+// Ergebnis eines Signals nach den Regeln: Verkauf beim ersten Schlusskurs unter dem Stop, sonst nach 30 Tagen
+function withStop(s) {
+  if (s.r == null || !s.path || s.i == null || !CFG.stop) return s;
+  const sl = 1 - CFG.stop / 100; let lv = 1;
+  for (let k = 1; k < s.path.length; k++) {
+    if (s.path[k] != null) lv = s.path[k];
+    if (lv <= sl) return { ...s, r: (lv - 1) * 100, s: CAL && CAL[s.i] > 0 && CAL[s.i + k] > 0 ? (CAL[s.i + k] / CAL[s.i] - 1) * 100 : s.s, stopped: 1 };
+  }
+  return s;
+}
 function livePanel() {
   const LV = RU.live; if (!LV) return "";
-  const live = D.signals.filter(s => s.d >= LV), done = live.filter(s => s.r != null && s.s != null);
-  const st = stats(D.signals.filter(s => s.d < LV));
+  const live = D.signals.filter(s => s.d >= LV), done = live.filter(s => s.r != null && s.s != null).map(withStop);
+  const st = stats(D.signals.filter(s => s.d < LV).map(withStop));
   const n = done.length, win = n ? 100 * done.filter(s => s.r > 0).length / n : null, beat = n ? 100 * done.filter(s => s.r > s.s).length / n : null;
   const avg = n ? done.reduce((a, s) => a + s.r, 0) / n : null, ex = n ? done.reduce((a, s) => a + s.r - s.s, 0) / n : null;
   return `<div class="panel live"><div class="panel-h"><h2>Live-Bilanz <small class="mut">seit ${dDE(LV)}</small></h2><span class="sub">nur Signale ab diesem Tag · kein Backtest</span></div>
@@ -296,7 +306,7 @@ function livePanel() {
     <div class="tile"><div class="k">Treffer</div><div class="v">${q(win)}</div><div class="d">Backtest: ${q(st.hit)}</div></div>
     <div class="tile"><div class="k">Schlägt den S&amp;P</div><div class="v">${q(beat)}</div><div class="d">Backtest: ${q(st.beat)}</div></div>
     <div class="tile"><div class="k">Ø pro Trade</div><div class="v ${cls(avg)}">${pct(avg)}</div><div class="d">vs S&amp;P ${pct(ex)} · Backtest ${pct(st.ex)}</div></div>
-  </div>${n < 20 ? `<p class="hint" style="margin:10px 0 0">${n ? `Erst ${n} abgeschlossene${n === 1 ? "r" : ""} Trade${n === 1 ? "" : "s"}.` : "Noch kein Live-Trade abgeschlossen."} Aussagekräftig wird die Bilanz ab etwa 20–30 Trades. Gemessen über 30 Tage ab Meldung, ohne Stop.</p>` : ""}</div></div>`;
+  </div>${n < 20 ? `<p class="hint" style="margin:10px 0 0">${n ? `Erst ${n} abgeschlossene${n === 1 ? "r" : ""} Trade${n === 1 ? "" : "s"}.` : "Noch kein Live-Trade abgeschlossen."} Aussagekräftig wird die Bilanz ab etwa 20–30 Trades. Gemessen nach den Regeln: 30 Tage ab Einstieg, Stop −${CFG.stop} % auf Schlusskurs-Basis.</p>` : ""}</div></div>`;
 }
 function pastTable() {
   const done = D.signals.filter(s => s.r != null);
